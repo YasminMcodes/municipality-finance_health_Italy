@@ -6,7 +6,7 @@ machine learning framework.
 
 > **Associated publication:** *A Statistical Analysis of Social, Economic, 
 > and Financial Indicators Impacting Municipal Wealth in Italy* — 
-> Submitted to EUt+ Workshop Proceedings (Cassino, May 2026)
+
 
 ---
 
