@@ -4,8 +4,6 @@ A statistical analysis of social, economic, and financial indicators
 impacting municipal fiscal fragility in Italy, using an explainable 
 machine learning framework.
 
-> **Associated publication:** *A Statistical Analysis of Social, Economic, 
-> and Financial Indicators Impacting Municipal Wealth in Italy* — 
 
 
 ---
