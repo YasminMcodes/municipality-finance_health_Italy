@@ -1,7 +1,11 @@
 # ============================================================
-# COMPLETE PIPELINE SCRIPT
+# COMPLETE PIPELINE SCRIPT — WITH HYPERPARAMETER OPTIMIZATION
 # Municipal Fiscal Distress — Italy 2016-2023
 # From data loading to figure generation
+#
+# Changes vs. previous version:
+#   • Step 6.5  — Randomized Search hyperparameter optimization
+#                (thresholds kept at original 0.50 / 0.40 / 0.15)
 # ============================================================
 
 import os
@@ -11,7 +15,11 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.ticker as mtick
 import shap
-from sklearn.model_selection import train_test_split, StratifiedKFold, cross_validate
+from scipy.stats import loguniform, uniform
+from sklearn.model_selection import (
+    train_test_split, StratifiedKFold, cross_validate,
+    RandomizedSearchCV,
+)
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
@@ -22,7 +30,7 @@ from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, balanced_accuracy_score, confusion_matrix,
     classification_report, average_precision_score, brier_score_loss,
-    roc_curve, auc, precision_recall_curve
+    roc_curve, auc, precision_recall_curve,
 )
 from xgboost import XGBClassifier
 
@@ -182,7 +190,91 @@ pipe_xgb = Pipeline([('prep', preprocess_tree), ('clf', xgb)])
 print("✓ Pipelines built")
 
 # ══════════════════════════════════════════════════════════════
-# STEP 7 — CROSS VALIDATION
+# STEP 6.5 — HYPERPARAMETER OPTIMIZATION (Randomized Search)
+# Scored by PR-AUC, 5-fold Stratified CV.
+# ══════════════════════════════════════════════════════════════
+print("\n" + "="*60)
+print("STEP 6.5 — Hyperparameter Optimization (Randomized Search)")
+print("="*60)
+
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True,
+                           random_state=RANDOM_STATE)
+SEARCH_SCORING = 'average_precision'
+
+# ── Search space: Logistic Regression ────────────────────────
+param_dist_lr = {
+    'clf__C':            loguniform(1e-3, 1e2),
+    'clf__penalty':      ['l1', 'l2'],
+    'clf__class_weight': [None, 'balanced'],
+    'clf__solver':       ['liblinear'],
+}
+
+# ── Search space: Random Forest ──────────────────────────────
+param_dist_rf = {
+    'clf__n_estimators':      [200, 400, 600, 800],
+    'clf__max_depth':         [None, 5, 10, 20, 30],
+    'clf__min_samples_split': [2, 5, 10],
+    'clf__min_samples_leaf':  [1, 2, 4],
+    'clf__max_features':      ['sqrt', 'log2', 0.3, 0.5],
+    'clf__class_weight':      [None, 'balanced', 'balanced_subsample'],
+}
+
+# ── Search space: XGBoost ────────────────────────────────────
+# scale_pos_weight kept fixed at neg/pos (set in Step 6).
+param_dist_xgb = {
+    'clf__n_estimators':     [200, 400, 600, 800, 1000],
+    'clf__max_depth':        [3, 4, 5, 6, 8, 10],
+    'clf__learning_rate':    loguniform(1e-2, 3e-1),
+    'clf__subsample':        uniform(0.6, 0.4),   # 0.6 → 1.0
+    'clf__colsample_bytree': uniform(0.6, 0.4),   # 0.6 → 1.0
+    'clf__min_child_weight': [1, 3, 5, 7],
+    'clf__gamma':            [0, 0.1, 0.3, 0.5],
+    'clf__reg_alpha':        loguniform(1e-3, 1e1),
+    'clf__reg_lambda':       loguniform(1e-3, 1e1),
+}
+
+def run_search(name, pipe, param_dist, n_iter):
+    print(f"\n  Tuning {name}  "
+          f"({n_iter} iterations × 5 folds = {n_iter*5} fits)")
+    print("  " + "-"*56)
+    search = RandomizedSearchCV(
+        estimator           = pipe,
+        param_distributions = param_dist,
+        n_iter              = n_iter,
+        scoring             = SEARCH_SCORING,
+        cv                  = inner_cv,
+        n_jobs              = -1,
+        random_state        = RANDOM_STATE,
+        refit               = True,
+        verbose             = 0,
+    )
+    search.fit(X_train, y_train)
+    print(f"  Best CV PR-AUC: {search.best_score_:.4f}")
+    print(f"  Best params:")
+    for k, v in search.best_params_.items():
+        v_str = f"{v:.4f}" if isinstance(v, float) else str(v)
+        print(f"    {k:<26} = {v_str}")
+    return search.best_estimator_, search.best_score_
+
+# Reassign pipelines to the tuned versions
+pipe_lr,  best_lr_score  = run_search(
+    "Logistic Regression", pipe_lr,  param_dist_lr,  n_iter=20)
+pipe_rf,  best_rf_score  = run_search(
+    "Random Forest",       pipe_rf,  param_dist_rf,  n_iter=30)
+pipe_xgb, best_xgb_score = run_search(
+    "XGBoost",             pipe_xgb, param_dist_xgb, n_iter=50)
+
+print("\n" + "="*60)
+print("  TUNED MODELS — Best CV PR-AUC Summary")
+print("="*60)
+print(f"  {'Model':<22} {'Best CV PR-AUC':>16}")
+print(f"  {'-'*40}")
+print(f"  {'Logistic Regression':<22} {best_lr_score:>16.4f}")
+print(f"  {'Random Forest':<22} {best_rf_score:>16.4f}")
+print(f"  {'XGBoost':<22} {best_xgb_score:>16.4f}")
+
+# ══════════════════════════════════════════════════════════════
+# STEP 7 — CROSS VALIDATION (now on tuned pipelines)
 # ══════════════════════════════════════════════════════════════
 print("\n" + "="*60)
 print("STEP 7 — Cross Validation")
@@ -226,7 +318,7 @@ model_rf  = evaluate_model("Random Forest",       pipe_rf)
 model_xgb = evaluate_model("XGBoost",             pipe_xgb)
 
 # ══════════════════════════════════════════════════════════════
-# STEP 8 — HELD-OUT TEST EVALUATION
+# STEP 8 — HELD-OUT TEST EVALUATION (uses tuned thresholds)
 # ══════════════════════════════════════════════════════════════
 print("\n" + "="*60)
 print("STEP 8 — Held-Out Test Evaluation")
@@ -681,6 +773,156 @@ plt.close()
 print("✓ Figure 9 saved: figures/waterfalls/waterfall_carinola.png")
 
 # ══════════════════════════════════════════════════════════════
+# STEP 11 — ANONYMISED DUAL WATERFALL COMPARISON
+# ──────────────────────────────────────────────────────────────
+# Generates a side-by-side SHAP waterfall plot for one
+# distressed municipality and one healthy peer, with all
+# identifying information (name, province) suppressed.
+# Macro-region and population are kept because they are part
+# of the comparative argument, not municipal identifiers.
+#
+# Append this block to the end of your existing pipeline.
+# Requires the following objects already in scope:
+#   df_clean, X, model_xgb, explainer, clean_names, shap, plt
+# ══════════════════════════════════════════════════════════════
+print("\n" + "="*60)
+print("STEP 11 — Anonymised Dual Waterfall Comparison")
+print("="*60)
+
+import matplotlib.image as mpimg
+
+# ── Configuration ────────────────────────────────────────────
+# Real names are used only to look up the correct rows in
+# df_clean. They never appear in the rendered figure.
+DISTRESSED = {
+    'name':  'CARINOLA',
+    'year':  2022,
+    'label': 'Municipality A',
+}
+HEALTHY = {
+    'name':  'MESORACA',
+    'year':  2021,
+    'label': 'Municipality B',
+}
+
+# ── Helper: compute SHAP for any row in df_clean ─────────────
+def shap_for_row(df_row_index):
+    """SHAP values + predicted probability for one df_clean row.
+    Works whether or not the row is in the held-out test set."""
+    row_X = df_clean.loc[[df_row_index]].drop(
+        columns=['Bankrupt', 'Municipality_ID', 'Municipality',
+                 'Province', 'Year'], errors='ignore'
+    )
+    row_X    = row_X[X.columns]
+    row_prep = model_xgb.named_steps['prep'].transform(row_X)
+    exp_obj  = explainer(row_prep)
+    named    = shap.Explanation(
+        values        = exp_obj[0].values,
+        base_values   = exp_obj[0].base_values,
+        data          = exp_obj[0].data,
+        feature_names = clean_names,
+    )
+    prob = model_xgb.predict_proba(row_X)[0, 1]
+    return named, prob
+
+def find_row(name, year):
+    match = df_clean[
+        (df_clean['Municipality'].str.upper() == name.upper()) &
+        (df_clean['Year'] == year)
+    ]
+    if match.empty:
+        raise ValueError(f"Row not found: {name} ({year})")
+    return match.index[0], match.iloc[0]
+
+# ── Locate rows and compute SHAP values ──────────────────────
+idx_A, info_A = find_row(DISTRESSED['name'], DISTRESSED['year'])
+idx_B, info_B = find_row(HEALTHY['name'],    HEALTHY['year'])
+
+exp_A, prob_A = shap_for_row(idx_A)
+exp_B, prob_B = shap_for_row(idx_B)
+
+print(f"  {DISTRESSED['label']}: "
+      f"pop = {int(info_A['Population']):,}, "
+      f"region = {info_A['Region_Group']}, "
+      f"P(distress) = {prob_A:.3f}")
+print(f"  {HEALTHY['label']}: "
+      f"pop = {int(info_B['Population']):,}, "
+      f"region = {info_B['Region_Group']}, "
+      f"P(distress) = {prob_B:.3f}")
+
+# ── Style ─────────────────────────────────────────────────────
+plt.rcParams.update({
+    'font.family':       'serif',
+    'font.size':         11,
+    'axes.spines.top':   False,
+    'axes.spines.right': False,
+})
+
+# ── Generate the two waterfall plots (anonymised titles) ─────
+def render_waterfall(exp, info, label, prob, out_path):
+    fig = plt.figure(figsize=(12, 7))
+    shap.plots.waterfall(exp, max_display=12, show=False)
+    plt.title(
+        f'{label}\n'
+        f'Population: {int(info["Population"]):,} | '
+        f'Region: {info["Region_Group"]}\n'
+        f'Predicted distress probability: {prob:.3f}',
+        fontsize=11, fontweight='bold', pad=12,
+    )
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=300, bbox_inches='tight')
+    plt.close()
+
+path_A = 'figures/waterfalls/waterfall_municipality_A.png'
+path_B = 'figures/waterfalls/waterfall_municipality_B.png'
+
+render_waterfall(exp_A, info_A, DISTRESSED['label'], prob_A, path_A)
+render_waterfall(exp_B, info_B, HEALTHY['label'],    prob_B, path_B)
+print(f"  ✓ Saved: {path_A}")
+print(f"  ✓ Saved: {path_B}")
+
+# ── Combine into side-by-side comparison ─────────────────────
+img_A = mpimg.imread(path_A)
+img_B = mpimg.imread(path_B)
+
+fig, axes = plt.subplots(1, 2, figsize=(22, 9))
+
+axes[0].imshow(img_A)
+axes[0].axis('off')
+axes[0].set_title(
+    f'Panel A — {DISTRESSED["label"]} ({DISTRESSED["year"]})\n'
+    f'Distressed | P(distress) = {prob_A:.3f}',
+    fontsize=13, fontweight='bold', pad=10, color='#D65F5F',
+)
+
+axes[1].imshow(img_B)
+axes[1].axis('off')
+axes[1].set_title(
+    f'Panel B — {HEALTHY["label"]} ({HEALTHY["year"]})\n'
+    f'Healthy Peer | P(distress) = {prob_B:.3f}',
+    fontsize=13, fontweight='bold', pad=10, color='#4878CF',
+)
+
+# Round populations to nearest 100 for the suptitle range
+pop_A_round = int(round(info_A['Population'] / 100.0)) * 100
+pop_B_round = int(round(info_B['Population'] / 100.0)) * 100
+
+fig.suptitle(
+    f'SHAP Waterfall Comparison: Distressed vs Healthy Municipality\n'
+    f'Same Region ({info_A["Region_Group"]}), '
+    f'Similar Population (~{pop_A_round:,} vs ~{pop_B_round:,})',
+    fontsize=14, fontweight='bold', y=1.01,
+)
+
+plt.tight_layout()
+out_combined = 'figures/waterfall_comparison_anonymous.png'
+plt.savefig(out_combined, dpi=300, bbox_inches='tight')
+plt.close()
+print(f"  ✓ Saved: {out_combined}")
+
+print("\nStep 11 complete. Anonymised figure ready for inclusion.")
+
+# ══════════════════════════════════════════════════════════════
 # DONE
 # ══════════════════════════════════════════════════════════════
 print("\n" + "="*60)
@@ -697,6 +939,9 @@ all_files = [
     "figures/shap_summary.png",
     "figures/waterfalls/waterfall_pignataro.png",
     "figures/waterfalls/waterfall_carinola.png",
+    "figures/waterfalls/waterfall_municipality_A.png",
+    "figures/waterfalls/waterfall_municipality_B.png",
+    "figures/waterfall_comparison_anonymous.png",
 ]
 for f in all_files:
     print(f"  ✓ {f}")
