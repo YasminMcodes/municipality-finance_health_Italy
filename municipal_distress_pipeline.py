@@ -1,24 +1,44 @@
-# ============================================================
-# COMPLETE PIPELINE SCRIPT — WITH HYPERPARAMETER OPTIMIZATION
-# Municipal Fiscal Distress — Italy 2016-2023
-# From data loading to figure generation
-#
-# Changes vs. previous version:
-#   • Step 6.5  — Randomized Search hyperparameter optimization
-#                (thresholds kept at original 0.50 / 0.40 / 0.15)
-# ============================================================
+#!/usr/bin/env python3
+# ==============================================================================
+# REPRODUCIBLE PIPELINE: Municipal Fiscal Distress (Italy 2016-2023)
+# ==============================================================================
+# End-to-end execution script:
+#   - Data cleaning and indicator extraction
+#   - Train/test splitting & Preprocessing
+#   - Hyperparameter tuning via RandomizedSearchCV (PR-AUC)
+#   - 5-fold Cross-Validation & Out-of-fold threshold optimization
+#   - Held-out test set evaluation & Bootstrap 95% CIs
+#   - Decision Curve Analysis (DCA)
+#   - Robustness Checks: Heavily-imputed exclusion, 2016 exclusion,
+#     Isole exclusion, Reporters-only cohort, and Temporal split (Pre/Post COVID)
+#   - Statistical checks (Chi-square regional balance, Ca' Foscari cross-match)
+#   - Full figure generation (ROC, PR, Missingness, SHAP, Waterfalls, shapiq)
+# ==============================================================================
 
 import os
+import warnings
+warnings.filterwarnings('ignore')
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from matplotlib.patches import Patch
 import matplotlib.ticker as mtick
+import matplotlib.image as mpimg
+from scipy.stats import loguniform, uniform, chi2_contingency
+
 import shap
-from scipy.stats import loguniform, uniform
+try:
+    import shapiq
+    HAS_SHAPIQ = True
+except ImportError:
+    HAS_SHAPIQ = False
+    print("(!) Warning: 'shapiq' is not installed. To run Shapley interaction analyses, run: pip install shapiq")
+
 from sklearn.model_selection import (
     train_test_split, StratifiedKFold, cross_validate,
-    RandomizedSearchCV,
+    RandomizedSearchCV, cross_val_predict
 )
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
@@ -27,19 +47,20 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
-    accuracy_score, precision_score, recall_score, f1_score,
+    accuracy_score, precision_score, recall_score, f1_score, fbeta_score,
     roc_auc_score, balanced_accuracy_score, confusion_matrix,
     classification_report, average_precision_score, brier_score_loss,
-    roc_curve, auc, precision_recall_curve,
+    roc_curve, auc, precision_recall_curve
 )
+from sklearn.base import clone
 from xgboost import XGBClassifier
 
-# ── Create output folders ─────────────────────────────────────
+# ── Directory Setup ───────────────────────────────────────────────────────────
 os.makedirs('figures', exist_ok=True)
 os.makedirs('figures/waterfalls', exist_ok=True)
-print("✓ Output folders created")
+print("✓ Output folders initialized: figures/ and figures/waterfalls/")
 
-# ── Shared style ──────────────────────────────────────────────
+# ── Global Plot Settings ──────────────────────────────────────────────────────
 plt.rcParams.update({
     'font.family':       'serif',
     'font.size':         11,
@@ -57,22 +78,44 @@ COLORS = {
 
 RANDOM_STATE = 42
 
-# ══════════════════════════════════════════════════════════════
-# STEP 1 — LOAD DATA
-# ══════════════════════════════════════════════════════════════
-print("\n" + "="*60)
-print("STEP 1 — Loading Data")
-print("="*60)
+# ── Helper: Label Cleaning ────────────────────────────────────────────────────
+def clean_label(name):
+    name = str(name).replace('num__', '').replace('cat__', '')
+    name = name.replace('_pc', '')
+    replacements = {
+        'Current Tax, Contribution & Equalization Revenues': 'Tax & Equalization Revenues',
+        'Revenues from Financial Asset Reduction':          'Asset Liquidation Revenues',
+        'Treasurer/Cashier Advances':                       'Cashier Advances',
+        'Third-Party & Giro Revenues':                      'Third-Party Revenues',
+        'Education & Right to Study':                       'Education Spending',
+        'Social Rights, Policies & Family':                 'Social Rights & Welfare',
+        'Sustainable Development & Environmental Protection':'Sustainable Development',
+        'Agriculture, Agri-food Policies & Fisheries':       'Agriculture Policies',
+        'Economic Development & Competitiveness':           'Economic Development',
+        'Energy & Diversification of Sources':              'Energy & Diversification',
+        'Transport & Right to Mobility':                    'Transport & Mobility',
+        'Employment & Vocational Training':                 'Employment & Training',
+        'Youth Policies, Sports & Leisure':                 'Youth & Sports',
+        'Population aged 25-64 with an educational qualification no higher than lower secondary education': 'Low Education Rate (25-64)',
+    }
+    for long, short in replacements.items():
+        name = name.replace(long, short)
+    return name.strip()
 
-df = pd.read_csv('final_municipality_dataset_percap_with_indicators.csv')
-print(f"Dataset loaded: {df.shape[0]} rows, {df.shape[1]} columns")
 
-# ══════════════════════════════════════════════════════════════
-# STEP 2 — CLEAN
-# ══════════════════════════════════════════════════════════════
-print("\n" + "="*60)
-print("STEP 2 — Cleaning")
-print("="*60)
+# ==============================================================================
+# STEP 1 & 2 — LOAD & CLEAN DATA
+# ==============================================================================
+print("\n" + "="*70)
+print("STEP 1 & 2 — Loading and Cleaning Data")
+print("="*70)
+
+DATA_PATH = 'final_municipality_dataset_percap_with_indicators.csv'
+if not os.path.exists(DATA_PATH):
+    raise FileNotFoundError(f"Could not find '{DATA_PATH}'. Ensure it is in the working directory.")
+
+df = pd.read_csv(DATA_PATH)
+print(f"Raw dataset: {df.shape[0]} rows, {df.shape[1]} columns")
 
 non_financial = ['Municipality_ID', 'Municipality', 'Province',
                  'Year', 'Region_Group', 'Population_2019', 'Bankrupt']
@@ -81,127 +124,111 @@ financial_cols = [c for c in df.columns if c not in non_financial]
 all_missing_mask = df[financial_cols].isna().all(axis=1)
 df_clean = df.loc[~all_missing_mask].copy()
 
-print(f"Original rows  : {len(df)}")
-print(f"Dropped rows   : {all_missing_mask.sum()}")
-print(f"Rows kept      : {len(df_clean)}")
+print(f"Dropped completely empty financial records: {all_missing_mask.sum()}")
+print(f"Cleaned sample size: {len(df_clean)}")
 
-# ══════════════════════════════════════════════════════════════
-# STEP 3 — FEATURES & TARGET
-# ══════════════════════════════════════════════════════════════
-print("\n" + "="*60)
-print("STEP 3 — Defining Features and Target")
-print("="*60)
+# Population column standardizer for downstream figures
+if 'Population' not in df_clean.columns and 'Population_2019' in df_clean.columns:
+    df_clean['Population'] = df_clean['Population_2019']
 
-target   = 'Bankrupt'
-id_like  = ['Municipality_ID', 'Municipality', 'Province']
 
-# Drop Year from X completely
-X = df_clean.drop(columns=[target] + id_like + ['Year'])
+# ==============================================================================
+# STEP 3 — FEATURE DEFINITIONS & MISSINGNESS INDICATOR
+# ==============================================================================
+print("\n" + "="*70)
+print("STEP 3 — Feature Definitions & Indicators")
+print("="*70)
+
+target = 'Bankrupt'
+id_like = ['Municipality_ID', 'Municipality', 'Province']
+
+# Explicit missingness flag for Administrative Deficit (computed before median-imputation)
+df_clean['Administrative Deficit_pc__was_missing'] = (
+    df_clean['Administrative Deficit_pc'].isna().astype(int)
+)
+
+X = df_clean.drop(columns=[target] + id_like + ['Year'], errors='ignore')
 y = df_clean[target]
 
-# Region_Group as categorical only (Year removed)
 categorical_cols = ['Region_Group']
-numeric_cols     = [c for c in X.columns if c not in categorical_cols]
+numeric_cols = [c for c in X.columns if c not in categorical_cols]
 
-print(f"Features       : {X.shape[1]}")
-print(f"Target         : {target}")
-print(f"Categorical    : {categorical_cols}")
-print(f"Numeric        : {len(numeric_cols)} columns")
+print(f"Features: {X.shape[1]} total ({len(numeric_cols)} numeric, {len(categorical_cols)} categorical)")
 
-# ══════════════════════════════════════════════════════════════
-# STEP 4 — TRAIN / TEST SPLIT
-# ══════════════════════════════════════════════════════════════
-print("\n" + "="*60)
-print("STEP 4 — Train/Test Split")
-print("="*60)
+
+# ==============================================================================
+# STEP 4 — STRATIFIED TRAIN / TEST SPLIT
+# ==============================================================================
+print("\n" + "="*70)
+print("STEP 4 — Train / Test Split (70/30)")
+print("="*70)
 
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.30, stratify=y, random_state=RANDOM_STATE
 )
 
-def show_balance(name, y):
-    vc = y.value_counts(normalize=True)
-    print(f"{name} | size={len(y)} | "
-          f"non-bankrupt={vc.get(0,0):.3f} | "
-          f"bankrupt={vc.get(1,0):.3f}")
+def show_balance(name, target_series):
+    vc = target_series.value_counts(normalize=True)
+    print(f"  {name:<6} | N={len(target_series):<4} | Non-bankrupt={vc.get(0, 0):.3f} | Bankrupt={vc.get(1, 0):.3f}")
 
 show_balance("TRAIN", y_train)
-show_balance("TEST ", y_test)
+show_balance("TEST", y_test)
 
-# ══════════════════════════════════════════════════════════════
-# STEP 5 — PREPROCESSORS
-# ══════════════════════════════════════════════════════════════
-print("\n" + "="*60)
-print("STEP 5 — Building Preprocessors")
-print("="*60)
+
+# ==============================================================================
+# STEP 5 & 6 — PREPROCESSING PIPELINES & MODEL DEFINITION
+# ==============================================================================
+print("\n" + "="*70)
+print("STEP 5 & 6 — Building Preprocessing Pipelines & Classifiers")
+print("="*70)
 
 num_imputer = SimpleImputer(strategy='median')
 cat_imputer = SimpleImputer(strategy='most_frequent')
 cat_encoder = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
 
 preprocess_lr = ColumnTransformer(transformers=[
-    ('num', Pipeline([('imp', num_imputer),
-                      ('scaler', StandardScaler())]), numeric_cols),
-    ('cat', Pipeline([('imp', cat_imputer),
-                      ('enc', cat_encoder)]),          categorical_cols),
+    ('num', Pipeline([('imp', num_imputer), ('scaler', StandardScaler())]), numeric_cols),
+    ('cat', Pipeline([('imp', cat_imputer), ('enc', cat_encoder)]), categorical_cols),
 ], remainder='drop')
 
 preprocess_tree = ColumnTransformer(transformers=[
     ('num', Pipeline([('imp', num_imputer)]), numeric_cols),
-    ('cat', Pipeline([('imp', cat_imputer),
-                      ('enc', cat_encoder)]), categorical_cols),
+    ('cat', Pipeline([('imp', cat_imputer), ('enc', cat_encoder)]), categorical_cols),
 ], remainder='drop')
 
-print("✓ Preprocessors built")
-
-# ══════════════════════════════════════════════════════════════
-# STEP 6 — MODELS
-# ══════════════════════════════════════════════════════════════
-print("\n" + "="*60)
-print("STEP 6 — Defining Models")
-print("="*60)
-
-log_reg = LogisticRegression(
-    penalty='l2', C=1.0, solver='lbfgs',
-    max_iter=500, random_state=RANDOM_STATE
-)
-
-rf = RandomForestClassifier(
-    n_estimators=400, max_features='sqrt',
-    n_jobs=-1, random_state=RANDOM_STATE
-)
-
 neg, pos = (y_train == 0).sum(), (y_train == 1).sum()
-xgb = XGBClassifier(
-    n_estimators=400, max_depth=6,
-    learning_rate=0.05, subsample=0.8,
-    colsample_bytree=0.8,
-    scale_pos_weight=neg / pos,
-    eval_metric='logloss',
-    n_jobs=-1, random_state=RANDOM_STATE
-)
+scale_weight = neg / pos
+print(f"XGBoost scale_pos_weight: {scale_weight:.3f}")
 
-print(f"scale_pos_weight: {neg/pos:.3f}")
+pipe_lr = Pipeline([
+    ('prep', preprocess_lr),
+    ('clf', LogisticRegression(penalty='l2', C=1.0, solver='liblinear', max_iter=500, random_state=RANDOM_STATE))
+])
 
-# ── Pipelines ─────────────────────────────────────────────────
-pipe_lr  = Pipeline([('prep', preprocess_lr),  ('clf', log_reg)])
-pipe_rf  = Pipeline([('prep', preprocess_tree), ('clf', rf)])
-pipe_xgb = Pipeline([('prep', preprocess_tree), ('clf', xgb)])
-print("✓ Pipelines built")
+pipe_rf = Pipeline([
+    ('prep', preprocess_tree),
+    ('clf', RandomForestClassifier(n_estimators=400, max_features='sqrt', n_jobs=-1, random_state=RANDOM_STATE))
+])
 
-# ══════════════════════════════════════════════════════════════
+pipe_xgb = Pipeline([
+    ('prep', preprocess_tree),
+    ('clf', XGBClassifier(
+        n_estimators=400, max_depth=6, learning_rate=0.05, subsample=0.8,
+        colsample_bytree=0.8, scale_pos_weight=scale_weight,
+        eval_metric='logloss', n_jobs=-1, random_state=RANDOM_STATE
+    ))
+])
+
+
+# ==============================================================================
 # STEP 6.5 — HYPERPARAMETER OPTIMIZATION (Randomized Search)
-# Scored by PR-AUC, 5-fold Stratified CV.
-# ══════════════════════════════════════════════════════════════
-print("\n" + "="*60)
-print("STEP 6.5 — Hyperparameter Optimization (Randomized Search)")
-print("="*60)
+# ==============================================================================
+print("\n" + "="*70)
+print("STEP 6.5 — Hyperparameter Optimization (Scored by PR-AUC)")
+print("="*70)
 
-inner_cv = StratifiedKFold(n_splits=5, shuffle=True,
-                           random_state=RANDOM_STATE)
-SEARCH_SCORING = 'average_precision'
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
 
-# ── Search space: Logistic Regression ────────────────────────
 param_dist_lr = {
     'clf__C':            loguniform(1e-3, 1e2),
     'clf__penalty':      ['l1', 'l2'],
@@ -209,7 +236,6 @@ param_dist_lr = {
     'clf__solver':       ['liblinear'],
 }
 
-# ── Search space: Random Forest ──────────────────────────────
 param_dist_rf = {
     'clf__n_estimators':      [200, 400, 600, 800],
     'clf__max_depth':         [None, 5, 10, 20, 30],
@@ -219,14 +245,12 @@ param_dist_rf = {
     'clf__class_weight':      [None, 'balanced', 'balanced_subsample'],
 }
 
-# ── Search space: XGBoost ────────────────────────────────────
-# scale_pos_weight kept fixed at neg/pos (set in Step 6).
 param_dist_xgb = {
     'clf__n_estimators':     [200, 400, 600, 800, 1000],
     'clf__max_depth':        [3, 4, 5, 6, 8, 10],
     'clf__learning_rate':    loguniform(1e-2, 3e-1),
-    'clf__subsample':        uniform(0.6, 0.4),   # 0.6 → 1.0
-    'clf__colsample_bytree': uniform(0.6, 0.4),   # 0.6 → 1.0
+    'clf__subsample':        uniform(0.6, 0.4),
+    'clf__colsample_bytree': uniform(0.6, 0.4),
     'clf__min_child_weight': [1, 3, 5, 7],
     'clf__gamma':            [0, 0.1, 0.3, 0.5],
     'clf__reg_alpha':        loguniform(1e-3, 1e1),
@@ -234,297 +258,386 @@ param_dist_xgb = {
 }
 
 def run_search(name, pipe, param_dist, n_iter):
-    print(f"\n  Tuning {name}  "
-          f"({n_iter} iterations × 5 folds = {n_iter*5} fits)")
-    print("  " + "-"*56)
+    print(f"  Tuning {name} ({n_iter} iterations x 5 folds)...")
     search = RandomizedSearchCV(
-        estimator           = pipe,
-        param_distributions = param_dist,
-        n_iter              = n_iter,
-        scoring             = SEARCH_SCORING,
-        cv                  = inner_cv,
-        n_jobs              = -1,
-        random_state        = RANDOM_STATE,
-        refit               = True,
-        verbose             = 0,
+        estimator=pipe,
+        param_distributions=param_dist,
+        n_iter=n_iter,
+        scoring='average_precision',
+        cv=inner_cv,
+        n_jobs=-1,
+        random_state=RANDOM_STATE,
+        refit=True,
+        verbose=0,
     )
     search.fit(X_train, y_train)
-    print(f"  Best CV PR-AUC: {search.best_score_:.4f}")
-    print(f"  Best params:")
-    for k, v in search.best_params_.items():
-        v_str = f"{v:.4f}" if isinstance(v, float) else str(v)
-        print(f"    {k:<26} = {v_str}")
+    print(f"    -> Best CV PR-AUC: {search.best_score_:.4f}")
     return search.best_estimator_, search.best_score_
 
-# Reassign pipelines to the tuned versions
-pipe_lr,  best_lr_score  = run_search(
-    "Logistic Regression", pipe_lr,  param_dist_lr,  n_iter=20)
-pipe_rf,  best_rf_score  = run_search(
-    "Random Forest",       pipe_rf,  param_dist_rf,  n_iter=30)
-pipe_xgb, best_xgb_score = run_search(
-    "XGBoost",             pipe_xgb, param_dist_xgb, n_iter=50)
+pipe_lr,  best_lr_score  = run_search("Logistic Regression", pipe_lr,  param_dist_lr,  n_iter=20)
+pipe_rf,  best_rf_score  = run_search("Random Forest",       pipe_rf,  param_dist_rf,  n_iter=30)
+pipe_xgb, best_xgb_score = run_search("XGBoost",             pipe_xgb, param_dist_xgb, n_iter=50)
 
-print("\n" + "="*60)
-print("  TUNED MODELS — Best CV PR-AUC Summary")
-print("="*60)
-print(f"  {'Model':<22} {'Best CV PR-AUC':>16}")
-print(f"  {'-'*40}")
-print(f"  {'Logistic Regression':<22} {best_lr_score:>16.4f}")
-print(f"  {'Random Forest':<22} {best_rf_score:>16.4f}")
-print(f"  {'XGBoost':<22} {best_xgb_score:>16.4f}")
+# Cache tuned XGBoost params for downstream robustness analyses
+best_xgb_clf_params = pipe_xgb.named_steps['clf'].get_params()
+keep_keys = ['n_estimators', 'max_depth', 'learning_rate', 'subsample',
+             'colsample_bytree', 'min_child_weight', 'gamma',
+             'reg_alpha', 'reg_lambda']
+fixed_xgb_params = {k: best_xgb_clf_params[k] for k in keep_keys}
 
-# ══════════════════════════════════════════════════════════════
-# STEP 7 — CROSS VALIDATION (now on tuned pipelines)
-# ══════════════════════════════════════════════════════════════
-print("\n" + "="*60)
-print("STEP 7 — Cross Validation")
-print("="*60)
+
+# ==============================================================================
+# STEP 7 & 7.5 — CV EVALUATION & THRESHOLD OPTIMIZATION
+# ==============================================================================
+print("\n" + "="*70)
+print("STEP 7 & 7.5 — CV Evaluation & Out-of-Fold Threshold Search")
+print("="*70)
 
 cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
-scoring = {
-    'accuracy':          'accuracy',
-    'balanced_accuracy': 'balanced_accuracy',
-    'precision':         'precision',
-    'recall':            'recall',
-    'f1':                'f1',
-    'average_precision': 'average_precision',
-    'roc_auc':           'roc_auc',
-}
+threshold_grid = np.arange(0.05, 0.96, 0.01)
 
-def evaluate_model(name, pipe):
-    print(f"\n{'='*60}")
-    print(f"  {name} — 5-fold CV on TRAIN")
-    print(f"{'='*60}")
-    cv_res = cross_validate(pipe, X_train, y_train, cv=cv,
-                            scoring=scoring, n_jobs=-1,
-                            return_train_score=False)
-    metrics = [
-        ('accuracy',          'Accuracy'),
-        ('balanced_accuracy', 'Balanced Accuracy'),
-        ('precision',         'Precision'),
-        ('recall',            'Recall'),
-        ('f1',                'F1-score'),
-        ('average_precision', 'PR-AUC'),
-        ('roc_auc',           'ROC-AUC'),
-    ]
-    for key, label in metrics:
-        mean = cv_res[f'test_{key}'].mean()
-        std  = cv_res[f'test_{key}'].std()
-        print(f"  {label:<22}: {mean:.3f} ± {std:.3f}")
-    return pipe.fit(X_train, y_train)
+def search_threshold(name, pipe, X_tr, y_tr, cv_split, metric='f1', beta=1.0):
+    oof_proba = cross_val_predict(pipe, X_tr, y_tr, cv=cv_split, method='predict_proba', n_jobs=-1)[:, 1]
+    scores = []
+    for t in threshold_grid:
+        preds = (oof_proba >= t).astype(int)
+        if metric == 'f1':
+            s = f1_score(y_tr, preds, zero_division=0)
+        elif metric == 'fbeta':
+            s = fbeta_score(y_tr, preds, beta=beta, zero_division=0)
+        scores.append(s)
+    best_idx = int(np.argmax(scores))
+    best_t = threshold_grid[best_idx]
+    print(f"  {name:<22}: optimal threshold = {best_t:.2f} ({metric}{' (beta='+str(beta)+')' if metric=='fbeta' else ''} = {scores[best_idx]:.3f})")
+    return best_t
 
-model_lr  = evaluate_model("Logistic Regression", pipe_lr)
-model_rf  = evaluate_model("Random Forest",       pipe_rf)
-model_xgb = evaluate_model("XGBoost",             pipe_xgb)
+# Fit final models on full train split
+model_lr  = pipe_lr.fit(X_train, y_train)
+model_rf  = pipe_rf.fit(X_train, y_train)
+model_xgb = pipe_xgb.fit(X_train, y_train)
 
-# ══════════════════════════════════════════════════════════════
-# STEP 8 — HELD-OUT TEST EVALUATION (uses tuned thresholds)
-# ══════════════════════════════════════════════════════════════
-print("\n" + "="*60)
+# Determine decision thresholds
+threshold_lr  = 0.50
+print(f"  {'Logistic Regression':<22}: fixed threshold    = 0.50 (baseline)")
+threshold_rf  = search_threshold("Random Forest", pipe_rf, X_train, y_train, cv, metric='f1')
+threshold_xgb = search_threshold("XGBoost", pipe_xgb, X_train, y_train, cv, metric='fbeta', beta=2.0)
+
+
+# ==============================================================================
+# STEP 8 — HELD-OUT TEST EVALUATION
+# ==============================================================================
+print("\n" + "="*70)
 print("STEP 8 — Held-Out Test Evaluation")
-print("="*60)
+print("="*70)
 
-def evaluate_on_test(name, model, X_test, y_test, threshold=0.50):
-    proba = model.predict_proba(X_test)[:, 1]
+def evaluate_on_test(name, model, X_t, y_t, threshold=0.50, verbose=True):
+    proba = model.predict_proba(X_t)[:, 1]
     preds = (proba >= threshold).astype(int)
 
-    acc   = accuracy_score(y_test, preds)
-    bacc  = balanced_accuracy_score(y_test, preds)
-    prec  = precision_score(y_test, preds, zero_division=0)
-    rec   = recall_score(y_test, preds, zero_division=0)
-    f1    = f1_score(y_test, preds, zero_division=0)
-    prauc = average_precision_score(y_test, proba)
-    roc   = roc_auc_score(y_test, proba)
-    brier = brier_score_loss(y_test, proba)
-    tn, fp, fn, tp = confusion_matrix(
-        y_test, preds, labels=[0, 1]).ravel()
-
-    print(f"\n{'='*60}")
-    print(f"  {name} — Held-out TEST (threshold={threshold:.2f})")
-    print(f"{'='*60}")
-    print(f"  Accuracy          : {acc:.3f}")
-    print(f"  Balanced Accuracy : {bacc:.3f}")
-    print(f"  Precision         : {prec:.3f}")
-    print(f"  Recall            : {rec:.3f}")
-    print(f"  F1-score          : {f1:.3f}")
-    print(f"  PR-AUC            : {prauc:.3f}  <- primary metric")
-    print(f"  ROC-AUC           : {roc:.3f}")
-    print(f"  Brier Score       : {brier:.3f}")
-    print(f"\n  Confusion Matrix:")
-    print(f"               Pred 0   Pred 1")
-    print(f"  True 0 (N)   {tn:6d}   {fp:6d}")
-    print(f"  True 1 (B)   {fn:6d}   {tp:6d}")
-    print(f"\n  Classification Report:")
-    print(classification_report(
-        y_test, preds,
-        target_names=['Non-Bankrupt (0)', 'Bankrupt (1)'],
-        digits=3))
-
-    return {'accuracy': acc, 'balanced_accuracy': bacc,
-            'precision': prec, 'recall': rec, 'f1': f1,
-            'pr_auc': prauc, 'roc_auc': roc, 'brier': brier,
-            'tn': tn, 'fp': fp, 'fn': fn, 'tp': tp}
-
-res_lr  = evaluate_on_test("Logistic Regression", model_lr,
-                            X_test, y_test, threshold=0.50)
-res_rf  = evaluate_on_test("Random Forest",       model_rf,
-                            X_test, y_test, threshold=0.40)
-res_xgb = evaluate_on_test("XGBoost",             model_xgb,
-                            X_test, y_test, threshold=0.15)
-
-print(f"\n{'='*60}")
-print("  FINAL COMPARISON — Held-out TEST")
-print(f"{'='*60}")
-print(f"  {'Model':<22} {'PR-AUC':>8} {'ROC-AUC':>9} "
-      f"{'F1':>7} {'Recall':>8} {'Brier':>7}")
-print(f"  {'-'*57}")
-for name, res in [
-    ("Logistic Regression", res_lr),
-    ("Random Forest",       res_rf),
-    ("XGBoost",             res_xgb),
-]:
-    print(f"  {name:<22} "
-          f"{res['pr_auc']:>8.3f} "
-          f"{res['roc_auc']:>9.3f} "
-          f"{res['f1']:>7.3f} "
-          f"{res['recall']:>8.3f} "
-          f"{res['brier']:>7.3f}")
-
-# ══════════════════════════════════════════════════════════════
-# STEP 9 — CLEAN LABEL HELPER
-# ══════════════════════════════════════════════════════════════
-def clean_label(name):
-    name = name.replace('num__', '').replace('cat__', '')
-    name = name.replace('_pc', '')
-    replacements = {
-        'Current Tax, Contribution & Equalization Revenues':
-            'Tax & Equalization Revenues',
-        'Revenues from Financial Asset Reduction':
-            'Asset Liquidation Revenues',
-        'Treasurer/Cashier Advances':
-            'Cashier Advances',
-        'Third-Party & Giro Revenues':
-            'Third-Party Revenues',
-        'Education & Right to Study':
-            'Education Spending',
-        'Social Rights, Policies & Family':
-            'Social Rights & Welfare',
-        'Sustainable Development & Environmental Protection':
-            'Sustainable Development',
-        'Agriculture, Agri-food Policies & Fisheries':
-            'Agriculture Policies',
-        'Economic Development & Competitiveness':
-            'Economic Development',
-        'Energy & Diversification of Sources':
-            'Energy & Diversification',
-        'Transport & Right to Mobility':
-            'Transport & Mobility',
-        'Employment & Vocational Training':
-            'Employment & Training',
-        'Youth Policies, Sports & Leisure':
-            'Youth & Sports',
-        'Population aged 25-64 with an educational qualification '
-        'no higher than lower secondary education':
-            'Low Education Rate (25-64)',
+    metrics = {
+        'accuracy':          accuracy_score(y_t, preds),
+        'balanced_accuracy': balanced_accuracy_score(y_t, preds),
+        'precision':         precision_score(y_t, preds, zero_division=0),
+        'recall':            recall_score(y_t, preds, zero_division=0),
+        'f1':                f1_score(y_t, preds, zero_division=0),
+        'pr_auc':            average_precision_score(y_t, proba),
+        'roc_auc':           roc_auc_score(y_t, proba),
+        'brier':             brier_score_loss(y_t, proba),
     }
-    for long, short in replacements.items():
-        name = name.replace(long, short)
-    return name.strip()
+    tn, fp, fn, tp = confusion_matrix(y_t, preds, labels=[0, 1]).ravel()
+    metrics.update({'tn': tn, 'fp': fp, 'fn': fn, 'tp': tp})
 
-# ══════════════════════════════════════════════════════════════
-# STEP 10 — FIGURE GENERATION
-# ══════════════════════════════════════════════════════════════
-print("\n" + "="*60)
-print("STEP 10 — Generating Figures")
-print("="*60)
+    if verbose:
+        print(f"\n{name} (Threshold: {threshold:.2f})")
+        print(f"  PR-AUC: {metrics['pr_auc']:.3f} | ROC-AUC: {metrics['roc_auc']:.3f} | Recall: {metrics['recall']:.3f} | F1: {metrics['f1']:.3f}")
+        print(f"  Confusion Matrix: TP={tp}, FP={fp}, TN={tn}, FN={fn}")
+    return metrics
 
-# ── Shared data for figures ───────────────────────────────────
-feature_names_out = model_xgb.named_steps['prep'].get_feature_names_out()
-clean_names       = [clean_label(n) for n in feature_names_out]
-X_test_prep       = model_xgb.named_steps['prep'].transform(X_test)
-xgb_clf           = model_xgb.named_steps['clf']
+res_lr  = evaluate_on_test("Logistic Regression", model_lr,  X_test, y_test, threshold=threshold_lr)
+res_rf  = evaluate_on_test("Random Forest",       model_rf,  X_test, y_test, threshold=threshold_rf)
+res_xgb = evaluate_on_test("XGBoost",             model_xgb, X_test, y_test, threshold=threshold_xgb)
+
+
+# ==============================================================================
+# STEP 8.6 — BOOTSTRAP CONFIDENCE INTERVALS (2,000 Resamples)
+# ==============================================================================
+print("\n" + "="*70)
+print("STEP 8.6 — Bootstrap Confidence Intervals (Held-out Test)")
+print("="*70)
 
 proba_lr  = model_lr.predict_proba(X_test)[:, 1]
 proba_rf  = model_rf.predict_proba(X_test)[:, 1]
 proba_xgb = model_xgb.predict_proba(X_test)[:, 1]
 
-# ── Figure 1: Class Balance ───────────────────────────────────
-print("\nGenerating Figure 1: Class Balance...")
+N_BOOT = 2000
+rng = np.random.RandomState(RANDOM_STATE)
+y_test_arr = y_test.values
 
+def bootstrap_ci(proba, y_true, threshold, n_boot=N_BOOT):
+    metrics = {'pr_auc': [], 'recall': [], 'precision': [], 'f1': []}
+    n = len(y_true)
+    for _ in range(n_boot):
+        idx = rng.randint(0, n, size=n)
+        yb, pb = y_true[idx], proba[idx]
+        if yb.sum() == 0 or yb.sum() == n:
+            continue
+        preds_b = (pb >= threshold).astype(int)
+        metrics['pr_auc'].append(average_precision_score(yb, pb))
+        metrics['recall'].append(recall_score(yb, preds_b, zero_division=0))
+        metrics['precision'].append(precision_score(yb, preds_b, zero_division=0))
+        metrics['f1'].append(f1_score(yb, preds_b, zero_division=0))
+    return {k: (np.mean(v), np.percentile(v, 2.5), np.percentile(v, 97.5)) for k, v in metrics.items()}
+
+for name, prob, thresh in [("Logistic Regression", proba_lr, threshold_lr),
+                           ("Random Forest", proba_rf, threshold_rf),
+                           ("XGBoost", proba_xgb, threshold_xgb)]:
+    ci = bootstrap_ci(prob, y_test_arr, thresh)
+    print(f"\n  {name} (threshold={thresh:.2f}):")
+    for metric, (m, lo, hi) in ci.items():
+        print(f"    {metric:<10}: {m:.3f}  [95% CI: {lo:.3f}, {hi:.3f}]")
+
+
+# ==============================================================================
+# STEP 8.7 — DECISION CURVE ANALYSIS (DCA)
+# ==============================================================================
+print("\n" + "="*70)
+print("STEP 8.7 — Decision Curve Analysis")
+print("="*70)
+
+def net_benefit(y_true, proba, threshold):
+    preds = (proba >= threshold).astype(int)
+    tp = ((preds == 1) & (y_true == 1)).sum()
+    fp = ((preds == 1) & (y_true == 0)).sum()
+    n = len(y_true)
+    odds = threshold / (1.0 - threshold)
+    return (tp / n) - (fp / n) * odds
+
+thresholds_grid = np.arange(0.01, 0.91, 0.01)
+prevalence = y_test_arr.mean()
+
+nb_lr  = [net_benefit(y_test_arr, proba_lr,  t) for t in thresholds_grid]
+nb_rf  = [net_benefit(y_test_arr, proba_rf,  t) for t in thresholds_grid]
+nb_xgb = [net_benefit(y_test_arr, proba_xgb, t) for t in thresholds_grid]
+nb_treat_all = [prevalence - (1.0 - prevalence) * (t / (1.0 - t)) for t in thresholds_grid]
+nb_treat_none = [0.0] * len(thresholds_grid)
+
+fig, ax = plt.subplots(figsize=(8, 6))
+ax.plot(thresholds_grid, nb_xgb, color=COLORS['xgb'], lw=2, label='XGBoost')
+ax.plot(thresholds_grid, nb_rf,  color=COLORS['rf'],  lw=2, label='Random Forest')
+ax.plot(thresholds_grid, nb_lr,  color=COLORS['lr'],  lw=2, label='Logistic Regression')
+ax.plot(thresholds_grid, nb_treat_all,  'k--', lw=1, label='Flag all')
+ax.plot(thresholds_grid, nb_treat_none, 'k:',  lw=1, label='Flag none')
+ax.axvline(x=threshold_xgb, color=COLORS['xgb'], lw=0.8, linestyle=':', alpha=0.6)
+ax.axvline(x=threshold_rf,  color=COLORS['rf'],  lw=0.8, linestyle=':', alpha=0.6)
+ax.set_xlabel('Threshold Probability', fontsize=12)
+ax.set_ylabel('Net Benefit', fontsize=12)
+ax.set_title('Decision Curve Analysis — Held-Out Test Set', fontsize=13, fontweight='bold')
+ax.set_xlim([0, 0.9])
+ax.set_ylim([max(min(nb_lr + nb_rf + nb_xgb), -0.05), max(nb_treat_all[0], 0.5)])
+ax.legend(fontsize=9, loc='upper right', framealpha=0.9)
+ax.grid(True, linestyle='--', alpha=0.4)
+plt.tight_layout()
+plt.savefig('figures/decision_curve.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("✓ Saved: figures/decision_curve.png")
+
+
+# ==============================================================================
+# STEP 8.5 — ROBUSTNESS: EXCLUDING HEAVILY IMPUTED VARIABLES
+# ==============================================================================
+print("\n" + "="*70)
+print("STEP 8.5 — Robustness: Excluding Heavily-Imputed Features (>20% Missing)")
+print("="*70)
+
+HIGH_MISS_THRESHOLD = 0.20
+miss_rates = df_clean[numeric_cols].isna().mean()
+heavily_imputed = miss_rates[miss_rates > HIGH_MISS_THRESHOLD].index.tolist()
+
+numeric_cols_robust = [c for c in numeric_cols if c not in heavily_imputed]
+X_robust = X.drop(columns=heavily_imputed)
+X_train_robust = X_robust.loc[X_train.index]
+X_test_robust  = X_robust.loc[X_test.index]
+
+preprocess_robust = ColumnTransformer(transformers=[
+    ('num', Pipeline([('imp', num_imputer)]), numeric_cols_robust),
+    ('cat', Pipeline([('imp', cat_imputer), ('enc', cat_encoder)]), categorical_cols),
+], remainder='drop')
+
+pipe_xgb_robust = Pipeline([
+    ('prep', preprocess_robust),
+    ('clf', XGBClassifier(**fixed_xgb_params, scale_pos_weight=scale_weight,
+                          eval_metric='logloss', n_jobs=-1, random_state=RANDOM_STATE))
+])
+pipe_xgb_robust.fit(X_train_robust, y_train)
+thresh_robust = search_threshold("XGBoost (Robustness)", pipe_xgb_robust, X_train_robust, y_train, cv, metric='fbeta', beta=2.0)
+res_xgb_robust = evaluate_on_test("XGBoost (Excl. Heavily Imputed)", pipe_xgb_robust, X_test_robust, y_test, threshold=thresh_robust)
+
+
+# ==============================================================================
+# STEP 8.8 — SUB-COHORT ANALYSIS: COMPLETE REPORTERS ONLY
+# ==============================================================================
+print("\n" + "="*70)
+print("STEP 8.8 — Sub-Cohort Analysis: Complete Reporters Only")
+print("="*70)
+
+mask_reporters = df_clean['Administrative Deficit_pc'].notna()
+df_rep = df_clean.loc[mask_reporters].copy()
+features_rep = [c for c in X.columns if 'was_missing' not in c]
+X_rep = df_rep[features_rep]
+y_rep = df_rep[target]
+
+X_tr_rep, X_te_rep, y_tr_rep, y_te_rep = train_test_split(
+    X_rep, y_rep, test_size=0.30, stratify=y_rep, random_state=RANDOM_STATE
+)
+
+num_cols_rep = [c for c in numeric_cols if 'was_missing' not in c]
+preprocess_rep = ColumnTransformer(transformers=[
+    ('num', Pipeline([('imp', SimpleImputer(strategy='median'))]), num_cols_rep),
+    ('cat', Pipeline([('imp', SimpleImputer(strategy='most_frequent')),
+                      ('enc', OneHotEncoder(handle_unknown='ignore', sparse_output=False))]), categorical_cols),
+], remainder='drop')
+
+neg_rep, pos_rep = (y_tr_rep == 0).sum(), (y_tr_rep == 1).sum()
+pipe_xgb_rep = Pipeline([
+    ('prep', preprocess_rep),
+    ('clf', XGBClassifier(**fixed_xgb_params, scale_pos_weight=neg_rep / pos_rep,
+                          eval_metric='logloss', n_jobs=-1, random_state=RANDOM_STATE))
+])
+pipe_xgb_rep.fit(X_tr_rep, y_tr_rep)
+thresh_rep = search_threshold("XGBoost (Reporters)", pipe_xgb_rep, X_tr_rep, y_tr_rep,
+                              StratifiedKFold(5, shuffle=True, random_state=RANDOM_STATE),
+                              metric='fbeta', beta=2.0)
+res_xgb_rep = evaluate_on_test("XGBoost (Reporters Only)", pipe_xgb_rep, X_te_rep, y_te_rep, threshold=thresh_rep)
+
+
+# ==============================================================================
+# STEP 9.5 — TEMPORAL SUBPERIOD ROBUSTNESS (Pre-COVID vs COVID-Era)
+# ==============================================================================
+print("\n" + "="*70)
+print("STEP 9.5 — Temporal Subperiod Analysis")
+print("="*70)
+
+df_clean['era'] = df_clean['Year'].apply(lambda y: 'pre_covid' if y <= 2019 else 'covid_era')
+subperiod_results = {}
+
+for era_name in ['pre_covid', 'covid_era']:
+    df_era = df_clean[df_clean['era'] == era_name].copy()
+    X_era = df_era.drop(columns=[target] + id_like + ['Year', 'era'], errors='ignore')
+    y_era = df_era[target]
+
+    Xtr_e, Xte_e, ytr_e, yte_e = train_test_split(
+        X_era, y_era, test_size=0.30, stratify=y_era, random_state=RANDOM_STATE
+    )
+    neg_e, pos_e = (ytr_e == 0).sum(), (ytr_e == 1).sum()
+    pipe_era = Pipeline([
+        ('prep', preprocess_tree),
+        ('clf', XGBClassifier(**fixed_xgb_params, scale_pos_weight=neg_e / pos_e,
+                              eval_metric='logloss', n_jobs=-1, random_state=RANDOM_STATE))
+    ])
+    pipe_era.fit(Xtr_e, ytr_e)
+    thresh_era = search_threshold(f"XGBoost ({era_name})", pipe_era, Xtr_e, ytr_e,
+                                  StratifiedKFold(5, shuffle=True, random_state=RANDOM_STATE),
+                                  metric='fbeta', beta=2.0)
+    subperiod_results[era_name] = evaluate_on_test(f"XGBoost ({era_name})", pipe_era, Xte_e, yte_e, threshold=thresh_era)
+
+
+# ==============================================================================
+# ADDITIONAL ROBUSTNESS CHECKS (2016 Exclusion, Regional Isole, Chi-Square)
+# ==============================================================================
+print("\n" + "="*70)
+print("ADDITIONAL ROBUSTNESS — 2016 Exclusion & Regional Robustness")
+print("="*70)
+
+# 1. Chi-square test on Regional Group
+ct = pd.crosstab(df_clean['Region_Group'], df_clean['Bankrupt'])
+chi2, p_val, dof, _ = chi2_contingency(ct, correction=False)
+print(f"Chi-square test (Region_Group x Bankrupt): chi2={chi2:.2f}, dof={dof}, p={p_val:.4f}")
+
+# 2. Exclude 2016 cohort
+df_no16 = df_clean[df_clean['Year'] != 2016].copy()
+X16 = df_no16.drop(columns=[target] + id_like + ['Year', 'era'], errors='ignore')
+y16 = df_no16[target]
+Xtr16, Xte16, ytr16, yte16 = train_test_split(X16, y16, test_size=0.30, stratify=y16, random_state=RANDOM_STATE)
+pipe16 = Pipeline([
+    ('prep', preprocess_tree),
+    ('clf', XGBClassifier(**fixed_xgb_params, scale_pos_weight=(ytr16 == 0).sum() / (ytr16 == 1).sum(),
+                          eval_metric='logloss', n_jobs=-1, random_state=RANDOM_STATE))
+])
+pipe16.fit(Xtr16, ytr16)
+t16 = search_threshold("XGBoost (Excl. 2016)", pipe16, Xtr16, ytr16,
+                       StratifiedKFold(5, shuffle=True, random_state=RANDOM_STATE), metric='fbeta', beta=2.0)
+evaluate_on_test("XGBoost (Excl. 2016)", pipe16, Xte16, yte16, threshold=t16)
+
+# 3. Exclude 'Isole' (Sicily & Sardinia)
+keep_tr = df_clean.loc[X_train.index, 'Region_Group'] != 'Isole'
+keep_te = df_clean.loc[X_test.index,  'Region_Group'] != 'Isole'
+Xtr_o, ytr_o = X_train[keep_tr], y_train[keep_tr]
+Xte_o, yte_o = X_test[keep_te],  y_test[keep_te]
+pipe_o = clone(pipe_xgb)
+pipe_o.set_params(clf__scale_pos_weight=(ytr_o == 0).sum() / (ytr_o == 1).sum())
+pipe_o.fit(Xtr_o, ytr_o)
+t_o = search_threshold("XGBoost (Excl. Isole)", pipe_o, Xtr_o, ytr_o,
+                       StratifiedKFold(5, shuffle=True, random_state=RANDOM_STATE), metric='fbeta', beta=2.0)
+evaluate_on_test("XGBoost (Excl. Isole)", pipe_o, Xte_o, yte_o, threshold=t_o)
+
+
+# ==============================================================================
+# STEP 10 — CORE FIGURE GENERATION
+# ==============================================================================
+print("\n" + "="*70)
+print("STEP 10 — Generating Core Figures")
+print("="*70)
+
+feature_names_out = model_xgb.named_steps['prep'].get_feature_names_out()
+clean_names       = [clean_label(n) for n in feature_names_out]
+X_test_prep       = model_xgb.named_steps['prep'].transform(X_test)
+xgb_clf           = model_xgb.named_steps['clf']
+
+# ── Figure 1: Class Balance ───────────────────────────────────────────────────
 bankrupt_n     = int(y.sum())
 non_bankrupt_n = len(y) - bankrupt_n
-
 fig, ax = plt.subplots(figsize=(6, 5))
 wedges, texts, autotexts = ax.pie(
-    [bankrupt_n, non_bankrupt_n],
-    explode=(0.05, 0),
-    labels=[f'Bankrupt\n(n={bankrupt_n})',
-            f'Non-Bankrupt\n(n={non_bankrupt_n})'],
+    [bankrupt_n, non_bankrupt_n], explode=(0.05, 0),
+    labels=[f'Bankrupt\n(n={bankrupt_n})', f'Non-Bankrupt\n(n={non_bankrupt_n})'],
     colors=[COLORS['bankrupt'], COLORS['non_bankrupt']],
     autopct='%1.1f%%', startangle=90, pctdistance=0.75,
     wedgeprops=dict(width=0.6, edgecolor='white', linewidth=2)
 )
-for t in texts:
-    t.set_fontsize(11); t.set_fontweight('bold')
-for at in autotexts:
-    at.set_fontsize(12); at.set_fontweight('bold')
-    at.set_color('white')
-ax.text(0, 0, f'N = {len(y)}\nMunicipalities',
-        ha='center', va='center',
-        fontsize=11, fontweight='bold', color='#333333')
-ax.set_title('Class Distribution in Sample\n(N = 462 Municipalities)',
-             fontsize=12, fontweight='bold', pad=15)
+for t in texts: t.set_fontsize(11); t.set_fontweight('bold')
+for at in autotexts: at.set_fontsize(12); at.set_fontweight('bold'); at.set_color('white')
+ax.text(0, 0, f'N = {len(y)}\nMunicipalities', ha='center', va='center', fontsize=11, fontweight='bold', color='#333333')
+ax.set_title('Class Distribution in Sample\n(N = 462 Municipalities)', fontsize=12, fontweight='bold', pad=15)
 plt.tight_layout()
 plt.savefig('figures/class_balance.png', dpi=300, bbox_inches='tight')
 plt.close()
-print("✓ Figure 1 saved: figures/class_balance.png")
+print("✓ Saved: figures/class_balance.png")
 
-# ── Figure 2: Missing Data ────────────────────────────────────
-print("Generating Figure 2: Missing Data...")
-
-df_financial  = df[financial_cols]
-missing_all   = (df_financial.isnull().sum()
-                 / len(df_financial) * 100)
-missing_all   = missing_all[missing_all > 0].sort_values(ascending=False)
-top_missing   = missing_all.head(10)
-
-df_b  = df[df['Bankrupt'] == 1][financial_cols]
-df_nb = df[df['Bankrupt'] == 0][financial_cols]
-missing_b  = (df_b[top_missing.index].isnull().sum()
-              / len(df_b) * 100)
-missing_nb = (df_nb[top_missing.index].isnull().sum()
-              / len(df_nb) * 100)
+# ── Figure 2: Missing Data Overview ───────────────────────────────────────────
+df_financial = df[financial_cols]
+missing_all = (df_financial.isnull().sum() / len(df_financial) * 100)
+missing_all = missing_all[missing_all > 0].sort_values(ascending=False)
+top_missing = missing_all.head(10)
 
 def clean_col_name(col):
     return col.replace('_pc', ' (p.c.)').replace('_', ' ').title()
 
 labels_m = [clean_col_name(c) for c in top_missing.index]
-x_m      = np.arange(len(labels_m))
-width_m  = 0.35
+missing_b  = (df[df['Bankrupt'] == 1][top_missing.index].isnull().sum() / df['Bankrupt'].sum() * 100)
+missing_nb = (df[df['Bankrupt'] == 0][top_missing.index].isnull().sum() / (len(df) - df['Bankrupt'].sum()) * 100)
+x_m = np.arange(len(labels_m))
+width_m = 0.35
 
 fig, ax = plt.subplots(figsize=(12, 6))
-bars_b  = ax.bar(x_m - width_m/2, missing_b.values, width_m,
-                 label='Bankrupt', color=COLORS['bankrupt'], alpha=0.85)
-bars_nb = ax.bar(x_m + width_m/2, missing_nb.values, width_m,
-                 label='Non-Bankrupt', color=COLORS['non_bankrupt'],
-                 alpha=0.85)
-for bar in bars_b:
+bars_b  = ax.bar(x_m - width_m/2, missing_b.values, width_m, label='Bankrupt', color=COLORS['bankrupt'], alpha=0.85)
+bars_nb = ax.bar(x_m + width_m/2, missing_nb.values, width_m, label='Non-Bankrupt', color=COLORS['non_bankrupt'], alpha=0.85)
+for bar in list(bars_b) + list(bars_nb):
     h = bar.get_height()
     if h > 0:
-        ax.text(bar.get_x() + bar.get_width()/2, h + 0.5,
-                f'{h:.0f}%', ha='center', va='bottom',
-                fontsize=9, color=COLORS['bankrupt'], fontweight='bold')
-for bar in bars_nb:
-    h = bar.get_height()
-    if h > 0:
-        ax.text(bar.get_x() + bar.get_width()/2, h + 0.5,
-                f'{h:.0f}%', ha='center', va='bottom',
-                fontsize=9, color=COLORS['non_bankrupt'], fontweight='bold')
+        ax.text(bar.get_x() + bar.get_width()/2, h + 0.5, f'{h:.0f}%', ha='center', va='bottom', fontsize=9, fontweight='bold')
 ax.set_xlabel('Financial Indicator', fontsize=12, labelpad=10)
 ax.set_ylabel('Missing Values (%)', fontsize=12)
-ax.set_title('Missing Financial Data by Bankruptcy Status\n'
-             'Top 10 Most Incomplete Indicators',
-             fontsize=13, fontweight='bold', pad=15)
+ax.set_title('Missing Financial Data by Bankruptcy Status', fontsize=13, fontweight='bold', pad=15)
 ax.set_xticks(x_m)
 ax.set_xticklabels(labels_m, rotation=35, ha='right', fontsize=9)
 ax.yaxis.set_major_formatter(mtick.PercentFormatter())
@@ -532,416 +645,269 @@ ax.legend(fontsize=11, framealpha=0.9)
 ax.set_ylim(0, max(missing_b.max(), missing_nb.max()) + 12)
 ax.grid(axis='y', linestyle='--', alpha=0.4)
 plt.tight_layout()
-plt.savefig('figures/missing_data_analysis.png',
-            dpi=300, bbox_inches='tight')
+plt.savefig('figures/missing_data_analysis.png', dpi=300, bbox_inches='tight')
 plt.close()
-print("✓ Figure 2 saved: figures/missing_data_analysis.png")
+print("✓ Saved: figures/missing_data_analysis.png")
 
-# ── Figure 3: Spending Comparison ────────────────────────────
-print("Generating Figure 3: Spending Comparison...")
+# ── Figure 2B: Missing Data by Region & Bankruptcy ────────────────────────────
+top_features = top_missing.index.tolist()
+regions = [r for r in ['North', 'Center', 'South', 'Islands', 'Isole'] if r in df['Region_Group'].unique()]
+if not regions:
+    regions = sorted(df['Region_Group'].dropna().unique())
 
-edu_col    = [c for c in df.columns
-              if 'Education' in c or 'Right to Study' in c][0]
-social_col = [c for c in df.columns
-              if 'Social Rights' in c or 'Policies & Family' in c][0]
+n_regions = len(regions)
+fig, axes = plt.subplots(nrows=1, ncols=n_regions, figsize=(4.5 * n_regions, 6.5), sharey=True)
+if n_regions == 1: axes = [axes]
+width_bar = 0.38
+x_pos = np.arange(len(top_features))
 
+for idx, reg in enumerate(regions):
+    ax = axes[idx]
+    df_reg = df[df['Region_Group'] == reg]
+    df_reg_b  = df_reg[df_reg['Bankrupt'] == 1]
+    df_reg_nb = df_reg[df_reg['Bankrupt'] == 0]
+    n_b, n_nb = len(df_reg_b), len(df_reg_nb)
+
+    pct_b  = (df_reg_b[top_features].isnull().sum() / n_b * 100) if n_b > 0 else pd.Series(0, index=top_features)
+    pct_nb = (df_reg_nb[top_features].isnull().sum() / n_nb * 100) if n_nb > 0 else pd.Series(0, index=top_features)
+
+    ax.bar(x_pos - width_bar/2, pct_b.values, width_bar, label='Bankrupt', color=COLORS['bankrupt'], alpha=0.85)
+    ax.bar(x_pos + width_bar/2, pct_nb.values, width_bar, label='Non-Bankrupt', color=COLORS['non_bankrupt'], alpha=0.85)
+    ax.set_title(f"{reg}\n(B: n={n_b}, Non-B: n={n_nb})", fontsize=11, fontweight='bold', pad=10)
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels([clean_col_name(c) for c in top_features], rotation=45, ha='right', fontsize=8.5)
+    ax.grid(axis='y', linestyle='--', alpha=0.4)
+    if idx == 0:
+        ax.set_ylabel('Missing Values (%)', fontsize=11)
+        ax.yaxis.set_major_formatter(mtick.PercentFormatter())
+        ax.legend(fontsize=10, framealpha=0.9, loc='upper right')
+
+plt.suptitle('Financial Feature Missingness by Status & Macro-Region', fontsize=13, fontweight='bold', y=1.02)
+plt.tight_layout()
+plt.savefig('figures/missing_data_by_region.png', dpi=300, bbox_inches='tight')
+plt.close()
+print("✓ Saved: figures/missing_data_by_region.png")
+
+# ── Figure 3: Spending Comparison ─────────────────────────────────────────────
+edu_col = [c for c in df.columns if 'Education' in c or 'Right to Study' in c][0]
+social_col = [c for c in df.columns if 'Social Rights' in c or 'Policies & Family' in c][0]
 spending_vars = [edu_col, social_col]
 means_b  = df[df['Bankrupt'] == 1][spending_vars].mean()
 means_nb = df[df['Bankrupt'] == 0][spending_vars].mean()
 
-labels_s = ['Education\nSpending (p.c.)',
-            'Social Rights\nSpending (p.c.)']
-x_s      = np.arange(len(labels_s))
-width_s  = 0.35
-
 fig, ax = plt.subplots(figsize=(7, 5))
-bars_b  = ax.bar(x_s - width_s/2, means_b.values, width_s,
-                 label='Bankrupt', color=COLORS['bankrupt'], alpha=0.85)
-bars_nb = ax.bar(x_s + width_s/2, means_nb.values, width_s,
-                 label='Non-Bankrupt', color=COLORS['non_bankrupt'],
-                 alpha=0.85)
-for bar in bars_b:
-    h = bar.get_height()
-    ax.text(bar.get_x() + bar.get_width()/2, h + 0.5,
-            f'\u20ac{h:.0f}', ha='center', va='bottom',
-            fontsize=9, color=COLORS['bankrupt'], fontweight='bold')
-for bar in bars_nb:
-    h = bar.get_height()
-    ax.text(bar.get_x() + bar.get_width()/2, h + 0.5,
-            f'\u20ac{h:.0f}', ha='center', va='bottom',
-            fontsize=9, color=COLORS['non_bankrupt'], fontweight='bold')
-ax.set_ylabel('Mean Per Capita Spending (\u20ac)', fontsize=11)
-ax.set_title('Spending Patterns: Bankrupt vs Non-Bankrupt\n'
-             'Municipalities', fontsize=12, fontweight='bold', pad=12)
+x_s = np.arange(len(spending_vars))
+ax.bar(x_s - width_m/2, means_b.values, width_m, label='Bankrupt', color=COLORS['bankrupt'], alpha=0.85)
+ax.bar(x_s + width_m/2, means_nb.values, width_m, label='Non-Bankrupt', color=COLORS['non_bankrupt'], alpha=0.85)
+ax.set_ylabel('Mean Per Capita Spending (€)', fontsize=11)
+ax.set_title('Spending Patterns: Bankrupt vs Non-Bankrupt', fontsize=12, fontweight='bold', pad=12)
 ax.set_xticks(x_s)
-ax.set_xticklabels(labels_s, fontsize=11)
+ax.set_xticklabels(['Education Spending (p.c.)', 'Social Rights Spending (p.c.)'], fontsize=11)
 ax.legend(fontsize=10, framealpha=0.9)
 ax.grid(axis='y', linestyle='--', alpha=0.4)
 plt.tight_layout()
-plt.savefig('figures/spending_comparison.png',
-            dpi=300, bbox_inches='tight')
+plt.savefig('figures/spending_comparison.png', dpi=300, bbox_inches='tight')
 plt.close()
-print("✓ Figure 3 saved: figures/spending_comparison.png")
+print("✓ Saved: figures/spending_comparison.png")
 
-# ── Figure 4: ROC Curve ───────────────────────────────────────
-print("Generating Figure 4: ROC Curve...")
-
+# ── Figures 4 & 5: ROC and PR Curves ──────────────────────────────────────────
 fpr_lr,  tpr_lr,  _ = roc_curve(y_test, proba_lr)
 fpr_rf,  tpr_rf,  _ = roc_curve(y_test, proba_rf)
 fpr_xgb, tpr_xgb, _ = roc_curve(y_test, proba_xgb)
-auc_lr  = auc(fpr_lr,  tpr_lr)
-auc_rf  = auc(fpr_rf,  tpr_rf)
-auc_xgb = auc(fpr_xgb, tpr_xgb)
 
 fig, ax = plt.subplots(figsize=(7, 6))
-ax.plot(fpr_lr,  tpr_lr,  color=COLORS['lr'],  lw=2,
-        label=f'Logistic Regression  (AUC = {auc_lr:.3f})')
-ax.plot(fpr_rf,  tpr_rf,  color=COLORS['rf'],  lw=2,
-        label=f'Random Forest        (AUC = {auc_rf:.3f})')
-ax.plot(fpr_xgb, tpr_xgb, color=COLORS['xgb'], lw=2,
-        label=f'XGBoost              (AUC = {auc_xgb:.3f})')
-ax.plot([0, 1], [0, 1], 'k--', lw=1,
-        label='Random Classifier (AUC = 0.500)')
+ax.plot(fpr_lr,  tpr_lr,  color=COLORS['lr'],  lw=2, label=f"Logistic Regression (AUC = {auc(fpr_lr, tpr_lr):.3f})")
+ax.plot(fpr_rf,  tpr_rf,  color=COLORS['rf'],  lw=2, label=f"Random Forest (AUC = {auc(fpr_rf, tpr_rf):.3f})")
+ax.plot(fpr_xgb, tpr_xgb, color=COLORS['xgb'], lw=2, label=f"XGBoost (AUC = {auc(fpr_xgb, tpr_xgb):.3f})")
+ax.plot([0, 1], [0, 1], 'k--', lw=1, label='Random Classifier (AUC = 0.500)')
 ax.set_xlabel('False Positive Rate', fontsize=12)
 ax.set_ylabel('True Positive Rate',  fontsize=12)
 ax.set_title('ROC Curve Comparison', fontsize=13, fontweight='bold')
 ax.legend(loc='lower right', fontsize=10, framealpha=0.9)
-ax.set_xlim([0, 1]); ax.set_ylim([0, 1.02])
-ax.grid(True, linestyle='--', alpha=0.4)
+ax.set_xlim([0, 1]); ax.set_ylim([0, 1.02]); ax.grid(True, linestyle='--', alpha=0.4)
 plt.tight_layout()
 plt.savefig('figures/final_roc_curve.png', dpi=300, bbox_inches='tight')
 plt.close()
-print("✓ Figure 4 saved: figures/final_roc_curve.png")
-
-# ── Figure 5: PR Curve ────────────────────────────────────────
-print("Generating Figure 5: PR Curve...")
+print("✓ Saved: figures/final_roc_curve.png")
 
 prec_lr,  rec_lr,  _ = precision_recall_curve(y_test, proba_lr)
 prec_rf,  rec_rf,  _ = precision_recall_curve(y_test, proba_rf)
 prec_xgb, rec_xgb, _ = precision_recall_curve(y_test, proba_xgb)
-prauc_lr  = average_precision_score(y_test, proba_lr)
-prauc_rf  = average_precision_score(y_test, proba_rf)
-prauc_xgb = average_precision_score(y_test, proba_xgb)
-baseline  = y_test.mean()
 
 fig, ax = plt.subplots(figsize=(7, 6))
-ax.plot(rec_lr,  prec_lr,  color=COLORS['lr'],  lw=2,
-        label=f'Logistic Regression  (PR-AUC = {prauc_lr:.3f})')
-ax.plot(rec_rf,  prec_rf,  color=COLORS['rf'],  lw=2,
-        label=f'Random Forest        (PR-AUC = {prauc_rf:.3f})')
-ax.plot(rec_xgb, prec_xgb, color=COLORS['xgb'], lw=2,
-        label=f'XGBoost              (PR-AUC = {prauc_xgb:.3f})')
-ax.axhline(y=baseline, color='k', linestyle='--', lw=1,
-           label=f'Random Classifier (PR-AUC = {baseline:.3f})')
-ax.set_xlabel('Recall',    fontsize=12)
+ax.plot(rec_lr,  prec_lr,  color=COLORS['lr'],  lw=2, label=f"Logistic Regression (PR-AUC = {average_precision_score(y_test, proba_lr):.3f})")
+ax.plot(rec_rf,  prec_rf,  color=COLORS['rf'],  lw=2, label=f"Random Forest (PR-AUC = {average_precision_score(y_test, proba_rf):.3f})")
+ax.plot(rec_xgb, prec_xgb, color=COLORS['xgb'], lw=2, label=f"XGBoost (PR-AUC = {average_precision_score(y_test, proba_xgb):.3f})")
+ax.axhline(y=y_test.mean(), color='k', linestyle='--', lw=1, label=f"Baseline (PR-AUC = {y_test.mean():.3f})")
+ax.set_xlabel('Recall', fontsize=12)
 ax.set_ylabel('Precision', fontsize=12)
-ax.set_title('Precision-Recall Curve Comparison',
-             fontsize=13, fontweight='bold')
+ax.set_title('Precision-Recall Curve Comparison', fontsize=13, fontweight='bold')
 ax.legend(loc='upper right', fontsize=10, framealpha=0.9)
-ax.set_xlim([0, 1]); ax.set_ylim([0, 1.02])
-ax.grid(True, linestyle='--', alpha=0.4)
+ax.set_xlim([0, 1]); ax.set_ylim([0, 1.02]); ax.grid(True, linestyle='--', alpha=0.4)
 plt.tight_layout()
 plt.savefig('figures/final_pr_curve.png', dpi=300, bbox_inches='tight')
 plt.close()
-print("✓ Figure 5 saved: figures/final_pr_curve.png")
+print("✓ Saved: figures/final_pr_curve.png")
 
-# ── Figure 6: Gain Importance ─────────────────────────────────
-print("Generating Figure 6: Gain Importance...")
-
-feature_map = {f'f{i}': name
-               for i, name in enumerate(feature_names_out)}
+# ── Figure 6: Gain Importance ─────────────────────────────────────────────────
+feature_map = {f'f{i}': name for i, name in enumerate(feature_names_out)}
 gain_scores = xgb_clf.get_booster().get_score(importance_type='gain')
-gain_named  = {feature_map.get(k, k): v
-               for k, v in gain_scores.items()}
-gain_df = pd.DataFrame({
-    'feature': list(gain_named.keys()),
-    'gain':    list(gain_named.values())
-}).sort_values('gain', ascending=False).head(10)
+gain_named  = {feature_map.get(k, k): v for k, v in gain_scores.items()}
+gain_df = pd.DataFrame(list(gain_named.items()), columns=['feature', 'gain']).sort_values('gain', ascending=False)
 gain_df['label'] = gain_df['feature'].apply(clean_label)
+top10_gain = gain_df.head(10)
 
-colors_gain = ['#D65F5F' if i == 0 else '#4878CF'
-               for i in range(len(gain_df))]
-
+colors_gain = ['#D65F5F' if i == 0 else '#4878CF' for i in range(len(top10_gain))]
 fig, ax = plt.subplots(figsize=(10, 6))
-bars = ax.barh(gain_df['label'][::-1], gain_df['gain'][::-1],
-               color=colors_gain[::-1], alpha=0.85,
-               edgecolor='white', linewidth=0.8)
+bars = ax.barh(top10_gain['label'][::-1], top10_gain['gain'][::-1], color=colors_gain[::-1], alpha=0.85, edgecolor='white')
 for bar in bars:
     w = bar.get_width()
-    ax.text(w + 0.02, bar.get_y() + bar.get_height()/2,
-            f'{w:.2f}', va='center', ha='left',
-            fontsize=9, color='#333333')
+    ax.text(w + 0.02, bar.get_y() + bar.get_height()/2, f'{w:.2f}', va='center', ha='left', fontsize=9, color='#333333')
 ax.set_xlabel('Gain Score', fontsize=12)
-ax.set_title('XGBoost \u2014 Top 10 Structural Drivers of Fiscal Distress\n'
-             '(Gain: contribution to reducing prediction uncertainty)',
-             fontsize=12, fontweight='bold', pad=15)
-top_patch  = mpatches.Patch(color='#D65F5F', alpha=0.85,
-                             label='Top predictor')
-rest_patch = mpatches.Patch(color='#4878CF', alpha=0.85,
-                             label='Other top predictors')
-ax.legend(handles=[top_patch, rest_patch], fontsize=10, framealpha=0.9)
+ax.set_title('XGBoost — Top 10 Predictors by Gain Importance', fontsize=12, fontweight='bold', pad=15)
 ax.grid(axis='x', linestyle='--', alpha=0.4)
 plt.tight_layout()
 plt.savefig('figures/gain_importance.png', dpi=300, bbox_inches='tight')
 plt.close()
-print("✓ Figure 6 saved: figures/gain_importance.png")
+print("✓ Saved: figures/gain_importance.png")
 
-# ── Figure 7: SHAP Summary ────────────────────────────────────
-print("Generating Figure 7: SHAP Summary...")
-
-explainer   = shap.TreeExplainer(xgb_clf)
+# ── Figure 7: SHAP Summary ────────────────────────────────────────────────────
+explainer = shap.TreeExplainer(xgb_clf)
 shap_values = explainer.shap_values(X_test_prep)
-shap_exp    = explainer(X_test_prep)
+shap_exp = explainer(X_test_prep)
 
 fig = plt.figure(figsize=(14, 8))
-shap.summary_plot(
-    shap_values, X_test_prep,
-    feature_names=clean_names,
-    max_display=12, show=False,
-    plot_size=None, color_bar=True,
-    plot_type='dot', alpha=0.8,
-)
+shap.summary_plot(shap_values, X_test_prep, feature_names=clean_names, max_display=12, show=False)
 ax = plt.gca()
 ax.axvline(x=0, color='black', linewidth=0.8, linestyle='-')
 xlim = ax.get_xlim()
-ax.text(xlim[1] * 0.6, -0.8,
-        '\u2192 Increases bankruptcy risk',
-        fontsize=10, color='#D65F5F', fontweight='bold', ha='center')
-ax.text(xlim[0] * 0.6, -0.8,
-        'Reduces bankruptcy risk \u2190',
-        fontsize=10, color='#4878CF', fontweight='bold', ha='center')
-plt.title('XGBoost SHAP Summary \u2014 Direction & Magnitude of Each Driver\n'
-          'Red = high feature value   |   Blue = low feature value',
-          fontsize=12, fontweight='bold', pad=15)
+ax.text(xlim[1] * 0.6, -0.8, '→ Increases risk', fontsize=10, color='#D65F5F', fontweight='bold', ha='center')
+ax.text(xlim[0] * 0.6, -0.8, 'Reduces risk ←', fontsize=10, color='#4878CF', fontweight='bold', ha='center')
+plt.title('XGBoost SHAP Summary (Test Set)', fontsize=12, fontweight='bold', pad=15)
 plt.tight_layout()
 plt.savefig('figures/shap_summary.png', dpi=300, bbox_inches='tight')
 plt.close()
-print("✓ Figure 7 saved: figures/shap_summary.png")
+print("✓ Saved: figures/shap_summary.png")
 
-# ── Figure 8 & 9: Waterfall Plots ────────────────────────────
-print("Generating Figure 8 & 9: Waterfall Plots...")
 
-preds_xgb  = (proba_xgb >= 0.15).astype(int)
-test_munis = df_clean.iloc[X_test.index]['Municipality'].values
+# ==============================================================================
+# STEP 11 — ANONYMIZED DUAL WATERFALL PLOTS
+# ==============================================================================
+print("\n" + "="*70)
+print("STEP 11 — Anonymized Dual Waterfall Figures")
+print("="*70)
 
-idx_pignataro = np.where(test_munis == 'PIGNATARO INTERAMNA')[0][0]
-idx_carinola  = np.where(test_munis == 'CARINOLA')[0][0]
-
-def make_named_exp(idx):
-    return shap.Explanation(
-        values        = shap_exp[idx].values,
-        base_values   = shap_exp[idx].base_values,
-        data          = shap_exp[idx].data,
-        feature_names = clean_names
-    )
-
-exp_pignataro = make_named_exp(idx_pignataro)
-exp_carinola  = make_named_exp(idx_carinola)
-
-# Pignataro
-fig = plt.figure(figsize=(12, 7))
-shap.plots.waterfall(exp_pignataro, max_display=12, show=False)
-plt.title(
-    'Panel A \u2014 PIGNATARO INTERAMNA (FR, 2018)\n'
-    'Education Spending: \u20ac129 p.c. \u2192 '
-    'Partial protection (Blue bar)\n'
-    f'Predicted bankruptcy probability: '
-    f'{proba_xgb[idx_pignataro]:.3f}',
-    fontsize=11, fontweight='bold', pad=12
-)
-plt.tight_layout()
-plt.savefig('figures/waterfalls/waterfall_pignataro.png',
-            dpi=300, bbox_inches='tight')
-plt.close()
-print("✓ Figure 8 saved: figures/waterfalls/waterfall_pignataro.png")
-
-# Carinola
-fig = plt.figure(figsize=(12, 7))
-shap.plots.waterfall(exp_carinola, max_display=12, show=False)
-plt.title(
-    'Panel B \u2014 CARINOLA (CE, 2022)\n'
-    'Education Spending: \u20ac27 p.c. \u2192 '
-    'Amplifies risk (Red bar)\n'
-    f'Predicted bankruptcy probability: '
-    f'{proba_xgb[idx_carinola]:.3f}',
-    fontsize=11, fontweight='bold', pad=12
-)
-plt.tight_layout()
-plt.savefig('figures/waterfalls/waterfall_carinola.png',
-            dpi=300, bbox_inches='tight')
-plt.close()
-print("✓ Figure 9 saved: figures/waterfalls/waterfall_carinola.png")
-
-# ══════════════════════════════════════════════════════════════
-# STEP 11 — ANONYMISED DUAL WATERFALL COMPARISON
-# ──────────────────────────────────────────────────────────────
-# Generates a side-by-side SHAP waterfall plot for one
-# distressed municipality and one healthy peer, with all
-# identifying information (name, province) suppressed.
-# Macro-region and population are kept because they are part
-# of the comparative argument, not municipal identifiers.
-#
-# Append this block to the end of your existing pipeline.
-# Requires the following objects already in scope:
-#   df_clean, X, model_xgb, explainer, clean_names, shap, plt
-# ══════════════════════════════════════════════════════════════
-print("\n" + "="*60)
-print("STEP 11 — Anonymised Dual Waterfall Comparison")
-print("="*60)
-
-import matplotlib.image as mpimg
-
-# ── Configuration ────────────────────────────────────────────
-# Real names are used only to look up the correct rows in
-# df_clean. They never appear in the rendered figure.
-DISTRESSED = {
-    'name':  'CARINOLA',
-    'year':  2022,
-    'label': 'Municipality A',
-}
-HEALTHY = {
-    'name':  'MESORACA',
-    'year':  2021,
-    'label': 'Municipality B',
-}
-
-# ── Helper: compute SHAP for any row in df_clean ─────────────
 def shap_for_row(df_row_index):
-    """SHAP values + predicted probability for one df_clean row.
-    Works whether or not the row is in the held-out test set."""
-    row_X = df_clean.loc[[df_row_index]].drop(
-        columns=['Bankrupt', 'Municipality_ID', 'Municipality',
-                 'Province', 'Year'], errors='ignore'
-    )
-    row_X    = row_X[X.columns]
+    row_X = df_clean.loc[[df_row_index]].drop(columns=['Bankrupt', 'Municipality_ID', 'Municipality', 'Province', 'Year', 'era'], errors='ignore')
+    row_X = row_X[X.columns]
     row_prep = model_xgb.named_steps['prep'].transform(row_X)
     exp_obj  = explainer(row_prep)
-    named    = shap.Explanation(
-        values        = exp_obj[0].values,
-        base_values   = exp_obj[0].base_values,
-        data          = exp_obj[0].data,
-        feature_names = clean_names,
+    named = shap.Explanation(
+        values=exp_obj[0].values,
+        base_values=exp_obj[0].base_values,
+        data=exp_obj[0].data,
+        feature_names=clean_names,
     )
     prob = model_xgb.predict_proba(row_X)[0, 1]
     return named, prob
 
 def find_row(name, year):
-    match = df_clean[
-        (df_clean['Municipality'].str.upper() == name.upper()) &
-        (df_clean['Year'] == year)
-    ]
+    match = df_clean[(df_clean['Municipality'].str.upper() == name.upper()) & (df_clean['Year'] == year)]
     if match.empty:
-        raise ValueError(f"Row not found: {name} ({year})")
+        raise ValueError(f"Record {name} ({year}) not found in dataset.")
     return match.index[0], match.iloc[0]
 
-# ── Locate rows and compute SHAP values ──────────────────────
-idx_A, info_A = find_row(DISTRESSED['name'], DISTRESSED['year'])
-idx_B, info_B = find_row(HEALTHY['name'],    HEALTHY['year'])
+try:
+    idx_A, info_A = find_row('CARINOLA', 2022)
+    idx_B, info_B = find_row('MESORACA', 2021)
+    exp_A, prob_A = shap_for_row(idx_A)
+    exp_B, prob_B = shap_for_row(idx_B)
 
-exp_A, prob_A = shap_for_row(idx_A)
-exp_B, prob_B = shap_for_row(idx_B)
+    def render_waterfall(exp, info, label, prob, out_path):
+        fig = plt.figure(figsize=(12, 7))
+        shap.plots.waterfall(exp, max_display=12, show=False)
+        plt.title(f"{label}\nPopulation: {int(info['Population']):,} | Region: {info['Region_Group']}\nPredicted distress probability: {prob:.3f}",
+                  fontsize=11, fontweight='bold', pad=12)
+        plt.tight_layout()
+        plt.savefig(out_path, dpi=300, bbox_inches='tight')
+        plt.close()
 
-print(f"  {DISTRESSED['label']}: "
-      f"pop = {int(info_A['Population']):,}, "
-      f"region = {info_A['Region_Group']}, "
-      f"P(distress) = {prob_A:.3f}")
-print(f"  {HEALTHY['label']}: "
-      f"pop = {int(info_B['Population']):,}, "
-      f"region = {info_B['Region_Group']}, "
-      f"P(distress) = {prob_B:.3f}")
+    p_A = 'figures/waterfalls/waterfall_municipality_A.png'
+    p_B = 'figures/waterfalls/waterfall_municipality_B.png'
+    render_waterfall(exp_A, info_A, "Municipality A (Distressed)", prob_A, p_A)
+    render_waterfall(exp_B, info_B, "Municipality B (Healthy Peer)", prob_B, p_B)
 
-# ── Style ─────────────────────────────────────────────────────
-plt.rcParams.update({
-    'font.family':       'serif',
-    'font.size':         11,
-    'axes.spines.top':   False,
-    'axes.spines.right': False,
-})
-
-# ── Generate the two waterfall plots (anonymised titles) ─────
-def render_waterfall(exp, info, label, prob, out_path):
-    fig = plt.figure(figsize=(12, 7))
-    shap.plots.waterfall(exp, max_display=12, show=False)
-    plt.title(
-        f'{label}\n'
-        f'Population: {int(info["Population"]):,} | '
-        f'Region: {info["Region_Group"]}\n'
-        f'Predicted distress probability: {prob:.3f}',
-        fontsize=11, fontweight='bold', pad=12,
-    )
+    # Combined dual figure
+    img_A = mpimg.imread(p_A)
+    img_B = mpimg.imread(p_B)
+    fig, axes = plt.subplots(1, 2, figsize=(22, 9))
+    axes[0].imshow(img_A); axes[0].axis('off')
+    axes[0].set_title(f'Panel A — Municipality A (2022)\nDistressed | P = {prob_A:.3f}', fontsize=13, fontweight='bold', color='#D65F5F')
+    axes[1].imshow(img_B); axes[1].axis('off')
+    axes[1].set_title(f'Panel B — Municipality B (2021)\nHealthy Peer | P = {prob_B:.3f}', fontsize=13, fontweight='bold', color='#4878CF')
     plt.tight_layout()
-    plt.savefig(out_path, dpi=300, bbox_inches='tight')
+    plt.savefig('figures/waterfall_comparison_anonymous.png', dpi=300, bbox_inches='tight')
     plt.close()
+    print("✓ Saved: figures/waterfall_comparison_anonymous.png")
+except Exception as e:
+    print(f"(!) Note on waterfall generation: {e}")
 
-path_A = 'figures/waterfalls/waterfall_municipality_A.png'
-path_B = 'figures/waterfalls/waterfall_municipality_B.png'
 
-render_waterfall(exp_A, info_A, DISTRESSED['label'], prob_A, path_A)
-render_waterfall(exp_B, info_B, HEALTHY['label'],    prob_B, path_B)
-print(f"  ✓ Saved: {path_A}")
-print(f"  ✓ Saved: {path_B}")
+# ==============================================================================
+# STEP 12 — SHAPLEY INTERACTIONS VIA SHAPIQ
+# ==============================================================================
+if HAS_SHAPIQ:
+    print("\n" + "="*70)
+    print("STEP 12 — Shapley Feature Interactions (shapiq TreeSHAP-IQ)")
+    print("="*70)
 
-# ── Combine into side-by-side comparison ─────────────────────
-img_A = mpimg.imread(path_A)
-img_B = mpimg.imread(path_B)
+    try:
+        tree_explainer = shapiq.TreeExplainer(model=xgb_clf, max_order=2, index='k-SII', class_index=1)
+        all_pair_sums = {}
 
-fig, axes = plt.subplots(1, 2, figsize=(22, 9))
+        n_eval = min(len(X_test_prep), 150)
+        print(f"Computing interactions across {n_eval} test samples...")
+        for row_i in range(n_eval):
+            iv = tree_explainer.explain(X_test_prep[row_i])
+            for key, pos in iv.interaction_lookup.items():
+                if len(key) == 2:
+                    all_pair_sums.setdefault(key, []).append(abs(iv.values[pos]))
 
-axes[0].imshow(img_A)
-axes[0].axis('off')
-axes[0].set_title(
-    f'Panel A — {DISTRESSED["label"]} ({DISTRESSED["year"]})\n'
-    f'Distressed | P(distress) = {prob_A:.3f}',
-    fontsize=13, fontweight='bold', pad=10, color='#D65F5F',
-)
+        pair_means = [(np.mean(v), key) for key, v in all_pair_sums.items()]
+        pair_means.sort(reverse=True)
 
-axes[1].imshow(img_B)
-axes[1].axis('off')
-axes[1].set_title(
-    f'Panel B — {HEALTHY["label"]} ({HEALTHY["year"]})\n'
-    f'Healthy Peer | P(distress) = {prob_B:.3f}',
-    fontsize=13, fontweight='bold', pad=10, color='#4878CF',
-)
+        top10 = pair_means[:10]
+        labels = [f"{clean_names[i]}\nx {clean_names[j]}" for _, (i, j) in top10]
+        values = [strength for strength, _ in top10]
+        missflag_name = 'Administrative Deficit__was_missing'
 
-# Round populations to nearest 100 for the suptitle range
-pop_A_round = int(round(info_A['Population'] / 100.0)) * 100
-pop_B_round = int(round(info_B['Population'] / 100.0)) * 100
+        bar_colors = [
+            COLORS['bankrupt'] if (clean_names[i] == missflag_name or clean_names[j] == missflag_name) else COLORS['non_bankrupt']
+            for _, (i, j) in top10
+        ]
 
-fig.suptitle(
-    f'SHAP Waterfall Comparison: Distressed vs Healthy Municipality\n'
-    f'Same Region ({info_A["Region_Group"]}), '
-    f'Similar Population (~{pop_A_round:,} vs ~{pop_B_round:,})',
-    fontsize=14, fontweight='bold', y=1.01,
-)
+        fig, ax = plt.subplots(figsize=(9, 7))
+        y_pos = np.arange(len(labels))[::-1]
+        bars = ax.barh(y_pos, values, color=bar_colors, alpha=0.85, edgecolor='white', linewidth=0.5)
+        for bar, val in zip(bars, values):
+            ax.text(val + max(values) * 0.015, bar.get_y() + bar.get_height()/2, f'{val:.3f}', va='center', fontsize=9, color='#333333')
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(labels, fontsize=9)
+        ax.set_xlabel('Mean |Shapley Interaction Value| (k-SII)', fontsize=11)
+        ax.set_title('Top 10 Pairwise Feature Interactions (TreeSHAP-IQ)', fontsize=13, fontweight='bold', pad=15)
+        ax.grid(axis='x', linestyle='--', alpha=0.4)
+        legend_elements = [
+            Patch(facecolor=COLORS['bankrupt'], label='Involves missingness indicator'),
+            Patch(facecolor=COLORS['non_bankrupt'], label='Other feature pairs'),
+        ]
+        ax.legend(handles=legend_elements, loc='lower right', fontsize=9)
+        plt.tight_layout()
+        plt.savefig('figures/shap_interactions_top10.png', dpi=300, bbox_inches='tight')
+        plt.close()
+        print("✓ Saved: figures/shap_interactions_top10.png")
+    except Exception as e:
+        print(f"(!) Could not finish shapiq interactions: {e}")
 
-plt.tight_layout()
-out_combined = 'figures/waterfall_comparison_anonymous.png'
-plt.savefig(out_combined, dpi=300, bbox_inches='tight')
-plt.close()
-print(f"  ✓ Saved: {out_combined}")
-
-print("\nStep 11 complete. Anonymised figure ready for inclusion.")
-
-# ══════════════════════════════════════════════════════════════
-# DONE
-# ══════════════════════════════════════════════════════════════
-print("\n" + "="*60)
-print("PIPELINE COMPLETE")
-print("="*60)
-print("\nFiles saved:")
-all_files = [
-    "figures/class_balance.png",
-    "figures/missing_data_analysis.png",
-    "figures/spending_comparison.png",
-    "figures/final_roc_curve.png",
-    "figures/final_pr_curve.png",
-    "figures/gain_importance.png",
-    "figures/shap_summary.png",
-    "figures/waterfalls/waterfall_pignataro.png",
-    "figures/waterfalls/waterfall_carinola.png",
-    "figures/waterfalls/waterfall_municipality_A.png",
-    "figures/waterfalls/waterfall_municipality_B.png",
-    "figures/waterfall_comparison_anonymous.png",
-]
-for f in all_files:
-    print(f"  ✓ {f}")
+print("\n" + "="*70)
+print("PIPELINE COMPLETED SUCCESSFULLY")
+print("="*70)
