@@ -1,0 +1,248 @@
+rank,feature_1,feature_2,mean_abs_interaction
+1,Administrative Deficit,Administrative Deficit__was_missing,0.07572644969551155
+2,Tax & Equalization Revenues,Administrative Deficit__was_missing,0.07466996350867826
+3,Education Spending,Administrative Deficit__was_missing,0.04411427055343381
+4,Loan Uptake,Administrative Deficit__was_missing,0.04072519948700064
+5,Non‑Tax Revenues,Administrative Deficit__was_missing,0.037246748583920526
+6,Capital Revenues,Administrative Deficit__was_missing,0.03637044988939922
+7,Loan Uptake,Administrative Deficit,0.03447691012871862
+8,Third‑Party & Giro Revenues,Administrative Deficit__was_missing,0.029711367601626026
+9,Public Debt,Administrative Deficit__was_missing,0.02721690580744897
+10,Low Education Rate (25-64),Administrative Deficit__was_missing,0.019160459463959775
+11,Loan Uptake,Education Spending,0.018541261459011235
+12,Administrative Deficit,Education Spending,0.018422491969720792
+13,Non‑Tax Revenues,Administrative Deficit,0.01591877383851315
+14,Loan Uptake,Employment rate (20-64 years),0.015466155520608803
+15,Administrative Deficit,Social Rights & Welfare,0.014946124263721083
+16,Public Debt,Education Spending,0.013948607922643054
+17,Civil Rescue,Administrative Deficit__was_missing,0.013761619887401167
+18,Administrative Deficit,Tourism,0.013635063099860987
+19,Tax & Equalization Revenues,Loan Uptake,0.013198088806811652
+20,Education Spending,Employment rate (20-64 years),0.01235568894384198
+21,Land Planning & Housing,Administrative Deficit__was_missing,0.011535432102222657
+22,Cashier Advances,Loan Uptake,0.010811065033959982
+23,Tax & Equalization Revenues,Administrative Deficit,0.010804251750756947
+24,Administrative Deficit,Population growth rate,0.010718107820528762
+25,Education Spending,Population growth rate,0.010394611811860415
+26,Third‑Party & Giro Revenues,Administrative Deficit,0.009646672920447493
+27,Administrative Deficit,Low Education Rate (25-64),0.009335222514480032
+28,Youth & Sports,Administrative Deficit__was_missing,0.009024009274021968
+29,Administrative Deficit,Public Debt,0.008909162118327752
+30,Capital Revenues,Cashier Advances,0.008706710415262903
+31,Population,Loan Uptake,0.008677596362990259
+32,Tax & Equalization Revenues,Education Spending,0.007955302768517499
+33,Loan Uptake,Public Debt,0.00725274567463598
+34,Total Revenues,Administrative Deficit__was_missing,0.007105692530233012
+35,Education Spending,Youth & Sports,0.0070773513736534874
+36,Public Debt,Employment rate (20-64 years),0.006724502783375104
+37,Non‑Tax Revenues,Education Spending,0.006700166658640701
+38,Third‑Party & Giro Revenues,Education Spending,0.006645902382802212
+39,Tax & Equalization Revenues,Third‑Party & Giro Revenues,0.006427166491444855
+40,Third‑Party & Giro Revenues,Public Debt,0.006236547579760241
+41,Employment rate (20-64 years),Administrative Deficit__was_missing,0.005972486556542251
+42,Non‑Tax Revenues,Third‑Party & Giro Revenues,0.0058824552052579625
+43,Tax & Equalization Revenues,Employment rate (20-64 years),0.005792491127333554
+44,Population,Public Debt,0.005756151322945706
+45,Administrative Deficit,Region_Group_Isole,0.005721241534143125
+46,Capital Revenues,Administrative Deficit,0.005609568292459132
+47,Transport & Mobility,Administrative Deficit__was_missing,0.0055126731660435436
+48,Administrative Deficit,Employment rate (20-64 years),0.005507006186193318
+49,Education Spending,Region_Group_Isole,0.005470932251761799
+50,Population growth rate,Administrative Deficit__was_missing,0.005282651523570167
+51,Loan Uptake,Social Rights & Welfare,0.0050934534964486924
+52,Third‑Party & Giro Revenues,Funds & Reserves,0.005077702149371912
+53,Population,Employment rate (20-64 years),0.005065367422896533
+54,Tax & Equalization Revenues,Public Debt,0.005040281766009981
+55,Capital Revenues,Education Spending,0.00493094044290178
+56,Education Spending,"Institutional, General & Management Services",0.004925083427578583
+57,Financial Advances,Economic Development,0.004914597078305979
+58,Loan Uptake,"Agriculture, Agri‑food Policies & Fisheries",0.004795204340061434
+59,Capital Revenues,Social Rights & Welfare,0.0047792401769774515
+60,Tax & Equalization Revenues,Low Education Rate (25-64),0.004627881648938468
+61,Capital Revenues,Loan Uptake,0.00458815657978418
+62,Tax & Equalization Revenues,Transport & Mobility,0.004449157261774768
+63,Population,Education Spending,0.004441609491058963
+64,Population,Administrative Deficit__was_missing,0.00441423401829786
+65,Public Debt,Population growth rate,0.004410870495084916
+66,Public Debt,Civil Rescue,0.004302547704651922
+67,Social Rights & Welfare,Low Education Rate (25-64),0.004275991345355459
+68,Third‑Party & Giro Revenues,Employment rate (20-64 years),0.004027806889597616
+69,Administrative Deficit,Land Planning & Housing,0.00387213692441398
+70,Total Revenues,Low Education Rate (25-64),0.0038612053463519458
+71,Loan Uptake,"Institutional, General & Management Services",0.003769477430674954
+72,Economic Development,Administrative Deficit__was_missing,0.0036854008007380593
+73,Cashier Advances,Youth & Sports,0.003682001295666264
+74,Tax & Equalization Revenues,Non‑Tax Revenues,0.0036249042507253844
+75,Tax & Equalization Revenues,"Agriculture, Agri‑food Policies & Fisheries",0.0035185619889468046
+76,Administrative Deficit,"Agriculture, Agri‑food Policies & Fisheries",0.0034111863710522316
+77,Education Spending,Low Education Rate (25-64),0.003395731313347298
+78,Social Rights & Welfare,Population growth rate,0.0033482040571504545
+79,Funds & Reserves,Administrative Deficit__was_missing,0.00333395724424656
+80,Public Debt,Tourism,0.0032695959368868118
+81,Sustainable Development,Employment rate (20-64 years),0.003262120852701049
+82,Cashier Advances,Population growth rate,0.003241340650909607
+83,Justice,Population growth rate,0.0032216507086218382
+84,Administrative Deficit,Relations with Other Local Authorities,0.0031727428290701898
+85,Education Spending,Civil Rescue,0.003158190388543765
+86,Employment rate (20-64 years),Population growth rate,0.003093342380205285
+87,Non‑Tax Revenues,Land Planning & Housing,0.003073875482339185
+88,Population,Tax & Equalization Revenues,0.0030447310032907194
+89,Administrative Deficit,Youth & Sports,0.0030390926981104897
+90,Sustainable Development,Social Rights & Welfare,0.00303757877905105
+91,Non‑Tax Revenues,Youth & Sports,0.0030308634437160634
+92,Loan Uptake,Transport & Mobility,0.00298529898802036
+93,Tourism,Employment rate (20-64 years),0.002897586255140985
+94,Tax & Equalization Revenues,Region_Group_Isole,0.0028913484253131724
+95,Loan Uptake,Population growth rate,0.0028849146981933427
+96,Energy & Diversification,Administrative Deficit__was_missing,0.0028137992791897604
+97,Public Order & Safety,Population growth rate,0.0027187617794819127
+98,Cashier Advances,Administrative Deficit,0.0027173200501741076
+99,Tax & Equalization Revenues,Financial Advances,0.002668442041520345
+100,Non‑Tax Revenues,Low Education Rate (25-64),0.002651769693845749
+101,Administrative Deficit,Sustainable Development,0.0025613300350260187
+102,"Agriculture, Agri‑food Policies & Fisheries",Administrative Deficit__was_missing,0.00254345735691242
+103,Social Rights & Welfare,Region_Group_Isole,0.0025267708312991595
+104,Administrative Deficit,Funds & Reserves,0.002484734535276695
+105,Tax & Equalization Revenues,Capital Revenues,0.002481694741646219
+106,Tax & Equalization Revenues,Civil Rescue,0.0023946335628361104
+107,Third‑Party & Giro Revenues,Low Education Rate (25-64),0.0023695109090772107
+108,Economic Development,Tourism,0.002345990058250248
+109,Public Debt,Region_Group_Isole,0.002328140977988011
+110,Education Spending,Services for Third Parties,0.0022532755902922924
+111,Current Transfers,Administrative Deficit__was_missing,0.002249141373797879
+112,Youth & Sports,Low Education Rate (25-64),0.002235085222564656
+113,Loan Uptake,Low Education Rate (25-64),0.0022207251825529825
+114,Loan Uptake,Youth & Sports,0.002191141122401683
+115,Total Revenues,Tax & Equalization Revenues,0.0021578119197591043
+116,Public Debt,Land Planning & Housing,0.002101625003000568
+117,Economic Development,Population growth rate,0.002078663979896551
+118,Third‑Party & Giro Revenues,Civil Rescue,0.0020781227233538616
+119,Current Transfers,Administrative Deficit,0.002068771162647944
+120,Land Planning & Housing,Employment rate (20-64 years),0.0020632364240272807
+121,Land Planning & Housing,Education Spending,0.002028651607176724
+122,Population,Tourism,0.0019956280895485094
+123,Capital Revenues,Employment rate (20-64 years),0.0019642962102544986
+124,Population,Administrative Deficit,0.0019436707880619883
+125,Population,Third‑Party & Giro Revenues,0.0018670562355314977
+126,Public Order & Safety,Low Education Rate (25-64),0.0018472866758931603
+127,Current Transfers,Employment rate (20-64 years),0.0018402873981862166
+128,Justice,Education Spending,0.00183554666646345
+129,Transport & Mobility,Health Protection,0.0018020639761269662
+130,Capital Revenues,Youth & Sports,0.0017900945742779758
+131,Population,Social Rights & Welfare,0.001785581415125006
+132,Capital Revenues,Public Debt,0.0017846452987397218
+133,Funds & Reserves,Employment rate (20-64 years),0.0017698389753182454
+134,Social Rights & Welfare,Relations with Other Local Authorities,0.001768027659227621
+135,Population,Capital Revenues,0.0017391578068453519
+136,Tax & Equalization Revenues,Justice,0.001729502740386668
+137,"Institutional, General & Management Services",Administrative Deficit__was_missing,0.0017068197189282187
+138,Sustainable Development,Tourism,0.001705664991462931
+139,Loan Uptake,Land Planning & Housing,0.0016876788438843985
+140,Population,Population growth rate,0.0016594370022249623
+141,"Agriculture, Agri‑food Policies & Fisheries",Population growth rate,0.001653308313091792
+142,Public Order & Safety,Education Spending,0.0016049784197660604
+143,Cashier Advances,Transport & Mobility,0.0015980426715218646
+144,Loan Uptake,Energy & Diversification,0.001590507944774702
+145,Total Expenses,Public Debt,0.0015556801490666274
+146,Tourism,"Institutional, General & Management Services",0.0015476422633818032
+147,Tourism,Population growth rate,0.00154344073071062
+148,Funds & Reserves,Services for Third Parties,0.001536121060083896
+149,Administrative Deficit,"Institutional, General & Management Services",0.0014755438289170875
+150,Loan Uptake,Sustainable Development,0.0014062194218666365
+151,Cashier Advances,Social Rights & Welfare,0.0013960231331878097
+152,Asset Liquidation Revenues,Administrative Deficit__was_missing,0.0013564126328527188
+153,Tax & Equalization Revenues,Energy & Diversification,0.0013503883980434362
+154,Tax & Equalization Revenues,Land Planning & Housing,0.0013288784351957118
+155,Financial Advances,Social Rights & Welfare,0.0013258099451940591
+156,Public Debt,Economic Development,0.0012974934386251532
+157,Transport & Mobility,Low Education Rate (25-64),0.0012214625321840722
+158,Relations with Other Local Authorities,Low Education Rate (25-64),0.001188636293281324
+159,Social Rights & Welfare,"Institutional, General & Management Services",0.0011797219318508657
+160,Relations with Other Local Authorities,Population growth rate,0.0011796012568487885
+161,Administrative Deficit,Civil Rescue,0.0011613931786869556
+162,Non‑Tax Revenues,Capital Revenues,0.001154894133866468
+163,Funds & Reserves,Public Order & Safety,0.0011469188827801548
+164,Public Debt,Services for Third Parties,0.0011392796674178976
+165,Tax & Equalization Revenues,Funds & Reserves,0.0011297379037489357
+166,Loan Uptake,Civil Rescue,0.0011236127145441358
+167,Justice,Low Education Rate (25-64),0.0011186444625899267
+168,Public Debt,Youth & Sports,0.0010933897707930513
+169,Public Debt,Low Education Rate (25-64),0.001090018263161479
+170,Total Expenses,Education Spending,0.0010812787166447344
+171,Current Transfers,Sustainable Development,0.0010802543616711365
+172,Financial Advances,Sustainable Development,0.0010726895530808113
+173,Third‑Party & Giro Revenues,Services for Third Parties,0.0010625164757071296
+174,Low Education Rate (25-64),Population growth rate,0.0010064953625053591
+175,Services for Third Parties,Population growth rate,0.0009651805423454596
+176,"Agriculture, Agri‑food Policies & Fisheries",Education Spending,0.0009482769050912187
+177,Current Transfers,Capital Revenues,0.0009334114818115408
+178,Services for Third Parties,Employment rate (20-64 years),0.0009297868864979376
+179,Tourism,Social Rights & Welfare,0.0009094847058752461
+180,Population,Low Education Rate (25-64),0.0009086548422191114
+181,Relations with Other Local Authorities,Region_Group_Isole,0.0008992321655192582
+182,Employment rate (20-64 years),Low Education Rate (25-64),0.0008881411826140533
+183,Total Expenses,Population growth rate,0.0008873933514576012
+184,Tax & Equalization Revenues,Public Order & Safety,0.0008869757714256817
+185,Capital Revenues,Land Planning & Housing,0.0008748616300015157
+186,Third‑Party & Giro Revenues,Youth & Sports,0.000866989782634033
+187,Sustainable Development,"Institutional, General & Management Services",0.0008661355212757734
+188,Financial Advances,Tourism,0.0008235538353143952
+189,Third‑Party & Giro Revenues,Land Planning & Housing,0.0008007544767531397
+190,Non‑Tax Revenues,Public Debt,0.0007990570492640998
+191,Justice,Public Order & Safety,0.0007724382199191927
+192,"Institutional, General & Management Services",Population growth rate,0.0007619430377047361
+193,Capital Revenues,Civil Rescue,0.0007614955444855315
+194,Tax & Equalization Revenues,Asset Liquidation Revenues,0.0007532180636987223
+195,Non‑Tax Revenues,Financial Advances,0.0007352383411828846
+196,Health Protection,Low Education Rate (25-64),0.0007269928267936052
+197,Justice,Employment rate (20-64 years),0.0007216599177041973
+198,Public Debt,Sustainable Development,0.0006994119749349087
+199,Funds & Reserves,Social Rights & Welfare,0.0006788293029619274
+200,Capital Revenues,Justice,0.0006707784720867384
+201,Total Expenses,Employment rate (20-64 years),0.0006565045488914125
+202,"Institutional, General & Management Services",Employment rate (20-64 years),0.000612000970063377
+203,Capital Revenues,Low Education Rate (25-64),0.0005911431793527809
+204,Civil Rescue,Employment rate (20-64 years),0.0005857421124955684
+205,Population,Justice,0.0005852275853375853
+206,Land Planning & Housing,Economic Development,0.0005783196622477465
+207,Public Debt,"Institutional, General & Management Services",0.0005737377121746396
+208,Loan Uptake,Employment & Training,0.0005609079964586968
+209,Employment & Training,Employment rate (20-64 years),0.000558883972031601
+210,Public Order & Safety,Employment rate (20-64 years),0.0005455545661178724
+211,Financial Advances,Population growth rate,0.0005379860140934954
+212,"Institutional, General & Management Services",Low Education Rate (25-64),0.0005120437185498813
+213,Tax & Equalization Revenues,Economic Development,0.0005045337906553167
+214,Public Debt,"Agriculture, Agri‑food Policies & Fisheries",0.0004925184934750116
+215,Population,Public Order & Safety,0.00046896870142707484
+216,Funds & Reserves,Education Spending,0.00042885453259222265
+217,Capital Revenues,Economic Development,0.0004148601493718887
+218,Population,Total Expenses,0.00040601623759327116
+219,Total Expenses,Services for Third Parties,0.0003948750177861164
+220,Cashier Advances,Relations with Other Local Authorities,0.00038864665703125214
+221,Education Spending,Employment & Training,0.0003811585684718318
+222,Third‑Party & Giro Revenues,"Institutional, General & Management Services",0.0003784516418020182
+223,Capital Revenues,Funds & Reserves,0.0003693028552951206
+224,Non‑Tax Revenues,Funds & Reserves,0.00034980148654787204
+225,Current Transfers,Land Planning & Housing,0.00032756822505321253
+226,Public Order & Safety,Health Protection,0.00030869699329860376
+227,Capital Revenues,Public Order & Safety,0.0003047722570716422
+228,Population,Services for Third Parties,0.0002887207076683234
+229,Land Planning & Housing,Youth & Sports,0.00028427845476548157
+230,Third‑Party & Giro Revenues,Energy & Diversification,0.0002825467011058403
+231,Funds & Reserves,Tourism,0.0002817435389187697
+232,Sustainable Development,Population growth rate,0.00027640060527620714
+233,Population,"Institutional, General & Management Services",0.00025843366454202435
+234,Population,Land Planning & Housing,0.00025391863190561345
+235,Population,Relations with Other Local Authorities,0.0002445350833728731
+236,Funds & Reserves,Energy & Diversification,0.00022668613508530232
+237,Population,Sustainable Development,0.00022371752217985555
+238,"Agriculture, Agri‑food Policies & Fisheries",Tourism,0.00022242333487143968
+239,Non‑Tax Revenues,Current Transfers,0.00021202194068589494
+240,Loan Uptake,Relations with Other Local Authorities,0.00017153925478846145
+241,Employment & Training,Population growth rate,0.00016875532514185203
+242,Non‑Tax Revenues,Asset Liquidation Revenues,0.00016759864279605063
+243,Tax & Equalization Revenues,Services for Third Parties,0.00014896166884392856
+244,Population,Employment & Training,0.00014590203711985317
+245,Funds & Reserves,Youth & Sports,0.0001239483457281896
+246,Non‑Tax Revenues,Energy & Diversification,0.000102993920751642
+247,Energy & Diversification,Education Spending,9.690865387099393e-05

@@ -1,0 +1,45 @@
+feature,mean_abs_shap,rank
+Administrative Deficit__was_missing,0.97424865,1
+Education Spending,0.27581522,2
+Administrative Deficit,0.2094338,3
+Loan Uptake,0.1847069,4
+Tax & Equalization Revenues,0.14817439,5
+Public Debt,0.07605612,6
+Capital Revenues,0.06673503,7
+Non‑Tax Revenues,0.053147227,8
+Third‑Party & Giro Revenues,0.052481595,9
+Employment rate (20-64 years),0.04577848,10
+Population growth rate,0.044596184,11
+Social Rights & Welfare,0.03901434,12
+Tourism,0.03301937,13
+Cashier Advances,0.030773973,14
+Population,0.025915056,15
+Low Education Rate (25-64),0.023058707,16
+Funds & Reserves,0.022838086,17
+Civil Rescue,0.021407785,18
+Land Planning & Housing,0.019710343,19
+Economic Development,0.017229067,20
+Youth & Sports,0.015146612,21
+Transport & Mobility,0.013593256,22
+Sustainable Development,0.011835411,23
+Financial Advances,0.010317312,24
+Total Revenues,0.009620446,25
+Relations with Other Local Authorities,0.006421652,26
+Region_Group_Isole,0.005976394,27
+"Institutional, General & Management Services",0.00532379,28
+Services for Third Parties,0.004949571,29
+Public Order & Safety,0.0044987313,30
+Energy & Diversification,0.0039269817,31
+Current Transfers,0.003913198,32
+"Agriculture, Agri‑food Policies & Fisheries",0.003735953,33
+Total Expenses,0.0029283375,34
+Justice,0.0026993023,35
+Health Protection,0.0025116052,36
+Asset Liquidation Revenues,0.0017996664,37
+Employment & Training,0.0009504892,38
+Cultural Heritage Protection & Enhancement,0.0,39
+International Relations,0.0,40
+Municipal Fragility Index (MFI) - (Decile),0.0,41
+Region_Group_Centro,0.0,42
+Region_Group_Nord-ovest,0.0,43
+Region_Group_Sud,0.0,44
